@@ -1,11 +1,8 @@
 use bytemuck::{Pod, Zeroable};
-use duckdb::Appender;
 use std::{
     fs::File,
     io::{BufReader, Read},
 };
-
-use crate::db::DuckDB;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
 #[repr(C)]
@@ -22,7 +19,10 @@ pub struct AccountHeader {
 }
 
 impl AccountHeader {
-    pub fn parse(path: &str, appender: &mut Appender) -> anyhow::Result<()> {
+    pub fn parse(
+        path: &str,
+        mut on_account: impl FnMut(&AccountHeader) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let reader = open_file(path);
         let decoder = zstd::Decoder::new(reader)?;
         let mut files = tar::Archive::new(decoder);
@@ -52,7 +52,7 @@ impl AccountHeader {
                 // align to next 8-byte boundary
                 offset = (offset + 7) & !7;
 
-                DuckDB::append_row(appender, header)?
+                on_account(header)?
             }
         }
 

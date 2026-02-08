@@ -19,7 +19,7 @@ fn main() -> Result<(), anyhow::Error> {
     let db = DuckDB::init(conn)?;
     let mut appender = db.appender()?;
 
-    AccountHeader::parse(path, &mut appender)?;
+    AccountHeader::parse(path, |header| DuckDB::append_row(&mut appender, header))?;
 
     let count = db.query_top_accounts()?;
     println!("total: {}", count);
