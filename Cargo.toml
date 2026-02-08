@@ -8,3 +8,4 @@ anyhow = "1.0.100"
 tar = "0.4.44"
 zstd = "0.13.3"
 bytemuck = { version = "1.25.0", features = ['derive'] }
+duckdb = { version = "1.4.4", features = ["bundled"] }
