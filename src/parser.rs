@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use crossbeam::channel::Sender;
 use std::{
     fs::File,
     io::{BufReader, Read},
@@ -19,13 +20,14 @@ pub struct AccountHeader {
 }
 
 impl AccountHeader {
-    pub fn parse(
-        path: &str,
-        mut on_account: impl FnMut(&AccountHeader) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        let reader = open_file(path);
-        let decoder = zstd::Decoder::new(reader)?;
+    pub fn parse_threaded(path: &str, tx: Sender<Vec<AccountHeader>>) -> anyhow::Result<()> {
+        let reader = open_file(path)?;
+        let mut decoder = zstd::Decoder::new(reader)?;
+        decoder.window_log_max(31)?; // allow up to 2GB window
+
         let mut files = tar::Archive::new(decoder);
+        let mut blocked: u64 = 0;
+        let mut buf = Vec::new();
 
         for file in files.entries()? {
             let mut file = file?;
@@ -34,33 +36,72 @@ impl AccountHeader {
             if !path.contains("accounts/") {
                 continue;
             }
-            // let size = file.size();
-            let mut buf = Vec::new();
+            buf.clear();
             file.read_to_end(&mut buf)?;
 
             let mut offset = 0;
+
+            let mut batch = Vec::new();
+
             while offset + size_of::<AccountHeader>() <= buf.len() {
                 //iterating while there is at least one header
                 let header = bytemuck::from_bytes::<AccountHeader>(
                     &buf[offset..offset + size_of::<AccountHeader>()],
                 );
+                batch.push(*header);
+
                 offset += size_of::<AccountHeader>();
 
                 let data = &buf[offset..offset + header.data_len as usize];
                 offset += data.len() as usize;
+                offset = (offset + 7) & !7; // align to next 8-byte boundary
+            }
 
-                // align to next 8-byte boundary
+            if tx.is_full() {
+                blocked += 1;
+            }
+
+            tx.send(batch)?;
+        }
+
+        eprintln!("producer blocked {blocked} times (channel was full)");
+        Ok(())
+    }
+    pub fn parse_bench(path: &str) -> anyhow::Result<u64> {
+        let reader = open_file(path)?;
+        let mut decoder = zstd::Decoder::new(reader)?;
+        decoder.window_log_max(31)?;
+
+        let mut files = tar::Archive::new(decoder);
+        let mut buf = Vec::new();
+        let mut count = 0u64;
+
+        for file in files.entries()? {
+            let mut file = file?;
+
+            let path = file.path()?.display().to_string();
+            if !path.contains("accounts/") {
+                continue;
+            }
+            buf.clear();
+            file.read_to_end(&mut buf)?;
+
+            let mut offset = 0;
+            while offset + size_of::<AccountHeader>() <= buf.len() {
+                let header = bytemuck::from_bytes::<AccountHeader>(
+                    &buf[offset..offset + size_of::<AccountHeader>()],
+                );
+                count += 1;
+                offset += size_of::<AccountHeader>() + header.data_len as usize;
                 offset = (offset + 7) & !7;
-
-                on_account(header)?
             }
         }
 
-        Ok(())
+        Ok(count)
     }
 }
 
-fn open_file(path: &str) -> BufReader<File> {
-    let file = std::fs::File::open(path).unwrap();
-    std::io::BufReader::new(file)
+fn open_file(path: &str) -> Result<BufReader<File>, anyhow::Error> {
+    let file = std::fs::File::open(path)?;
+    Ok(BufReader::with_capacity(1024 * 1024, file))
 }

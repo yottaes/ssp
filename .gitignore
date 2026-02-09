@@ -5,3 +5,5 @@ output.txt
 
 ssp
 accounts.db
+.claude/
+accounts_*.parquet
