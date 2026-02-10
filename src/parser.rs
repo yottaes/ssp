@@ -67,6 +67,8 @@ impl AccountHeader {
         eprintln!("producer blocked {blocked} times (channel was full)");
         Ok(())
     }
+
+    ///for raw read(zstd + tar) benchmarking without writing on the disk.
     pub fn parse_bench(path: &str) -> anyhow::Result<u64> {
         let reader = open_file(path)?;
         let mut decoder = zstd::Decoder::new(reader)?;

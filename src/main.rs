@@ -27,9 +27,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
+
     let decompress = std::thread::spawn(move || AccountHeader::parse_threaded(&path, tx));
 
     let schema = Arc::new(db::account_schema());
+
     let rows_received = Arc::new(AtomicU64::new(0));
     let consumer_starved = Arc::new(AtomicU64::new(0));
 
@@ -37,25 +39,25 @@ fn main() -> anyhow::Result<()> {
         .map(|i| {
             let rx = rx.clone();
             let schema = schema.clone();
-            let rows_received = rows_received.clone();
-            let consumer_starved = consumer_starved.clone();
+
+            let rows = rows_received.clone();
+            let starving = consumer_starved.clone();
             std::thread::spawn(move || -> anyhow::Result<()> {
                 let file = File::create(format!("accounts_{i}.parquet"))?;
                 let mut writer = ArrowWriter::try_new(file, schema, None)?;
-                loop {
+
+                while let Ok(batch) = {
                     if rx.is_empty() {
-                        consumer_starved.fetch_add(1, Ordering::Relaxed);
+                        starving.fetch_add(1, Ordering::Relaxed);
                     }
-                    match rx.recv() {
-                        Ok(batch) => {
-                            rows_received.fetch_add(batch.len() as u64, Ordering::Relaxed);
-                            let record_batch = db::build_record_batch(&batch)?;
-                            writer.write(&record_batch)?;
-                        }
-                        Err(_) => break,
-                    }
+                    rx.recv()
+                } {
+                    rows.fetch_add(1, Ordering::Relaxed);
+                    let record_batch = db::build_record_batch(&batch)?;
+                    writer.write(&record_batch)?;
                 }
                 writer.close()?;
+
                 Ok(())
             })
         })
@@ -69,12 +71,10 @@ fn main() -> anyhow::Result<()> {
         handle.join().expect("writer panicked")?;
     }
 
+    eprintln!("Rows received {}", rows_received.load(Ordering::Relaxed));
+
     eprintln!(
-        "rows received from producer: {}",
-        rows_received.load(Ordering::Relaxed)
-    );
-    eprintln!(
-        "consumer starved (channel empty): {}",
+        "starving {} times",
         consumer_starved.load(Ordering::Relaxed)
     );
 

@@ -39,9 +39,21 @@ pub fn build_record_batch(headers: &[AccountHeader]) -> anyhow::Result<RecordBat
         headers.iter().map(|h| h.rent_epoch),
     ));
 
+    //TODO: for data blobs in the future.
+    // let data_blobs: ArrayRef = Arc::new(BinaryArray::from(
+    //     headers.iter().map(|h| h.data_blob.as_slice()),
+    // ));
+
     let batch = RecordBatch::try_new(
         Arc::new(account_schema()),
-        vec![pubkeys, lamports, owners, data_lens, executables, rent_epochs],
+        vec![
+            pubkeys,
+            lamports,
+            owners,
+            data_lens,
+            executables,
+            rent_epochs,
+        ],
     )?;
 
     Ok(batch)
