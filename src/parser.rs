@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use crossbeam::channel::Sender;
 use std::{
+    fmt,
     fs::File,
     io::{BufReader, Read},
 };
@@ -19,6 +20,23 @@ pub struct AccountHeader {
     pub executable: u8,
     pub padding: [u8; 7],
     pub hash: [u8; 32],
+}
+impl fmt::Display for AccountHeader {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "version: {}, data_len: {}, pubkey: {}, lamports: {}, \
+             rent_epoch: {}, owner: {}, executable: {}, hash: {}",
+            self.write_version,
+            self.data_len,
+            bs58::encode(&self.pubkey).into_string(),
+            self.lamports,
+            self.rent_epoch,
+            bs58::encode(&self.owner).into_string(),
+            self.executable,
+            bs58::encode(&self.hash).into_string(),
+        )
+    }
 }
 
 impl AccountHeader {

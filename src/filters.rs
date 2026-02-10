@@ -11,12 +11,16 @@ pub struct Filters {
 
     #[arg(long)]
     pub pubkey: Option<String>,
+
+    #[arg(long, default_value = "false")]
+    pub include_dead: bool,
 }
 
 pub struct ResolvedFilters {
     pub owner: Option<[u8; 32]>,
     pub hash: Option<[u8; 32]>,
     pub pubkey: Option<[u8; 32]>,
+    pub include_dead: bool,
 }
 
 impl Filters {
@@ -25,12 +29,17 @@ impl Filters {
             owner: decode_b58_32(&self.owner)?,
             hash: decode_b58_32(&self.hash)?,
             pubkey: decode_b58_32(&self.pubkey)?,
+            include_dead: self.include_dead,
         })
     }
 }
 
 impl ResolvedFilters {
     pub fn matches(&self, header: &AccountHeader) -> bool {
+        if !self.include_dead && header.lamports == 0 {
+            return false;
+        }
+
         let owner = self.owner.is_none_or(|o| o == header.owner);
         let hash = self.hash.is_none_or(|h| h == header.hash);
         let pubkey = self.pubkey.is_none_or(|pk| pk == header.pubkey);
