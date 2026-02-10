@@ -7,3 +7,5 @@ ssp
 accounts.db
 .claude/
 accounts_*.parquet
+.envrc
+.bin/

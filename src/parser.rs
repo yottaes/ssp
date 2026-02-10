@@ -5,6 +5,8 @@ use std::{
     io::{BufReader, Read},
 };
 
+use crate::filters::ResolvedFilters;
+
 #[derive(Pod, Zeroable, Copy, Clone)]
 #[repr(C)]
 pub struct AccountHeader {
@@ -20,7 +22,11 @@ pub struct AccountHeader {
 }
 
 impl AccountHeader {
-    pub fn parse_threaded(path: &str, tx: Sender<Vec<AccountHeader>>) -> anyhow::Result<()> {
+    pub fn parse_threaded(
+        path: &str,
+        filters: ResolvedFilters,
+        tx: Sender<Vec<AccountHeader>>,
+    ) -> anyhow::Result<()> {
         let reader = open_file(path)?;
         let mut decoder = zstd::Decoder::new(reader)?;
         decoder.window_log_max(31)?; // allow up to 2GB window
@@ -48,58 +54,30 @@ impl AccountHeader {
                 let header = bytemuck::from_bytes::<AccountHeader>(
                     &buf[offset..offset + size_of::<AccountHeader>()],
                 );
-                batch.push(*header);
 
                 offset += size_of::<AccountHeader>();
 
                 let data = &buf[offset..offset + header.data_len as usize];
+
                 offset += data.len() as usize;
                 offset = (offset + 7) & !7; // align to next 8-byte boundary
+
+                if !filters.matches(header) {
+                    continue;
+                }
+                batch.push(*header);
             }
 
             if tx.is_full() {
                 blocked += 1;
             }
-
-            tx.send(batch)?;
+            if !batch.is_empty() {
+                tx.send(batch)?;
+            }
         }
 
         eprintln!("producer blocked {blocked} times (channel was full)");
         Ok(())
-    }
-
-    ///for raw read(zstd + tar) benchmarking without writing on the disk.
-    pub fn parse_bench(path: &str) -> anyhow::Result<u64> {
-        let reader = open_file(path)?;
-        let mut decoder = zstd::Decoder::new(reader)?;
-        decoder.window_log_max(31)?;
-
-        let mut files = tar::Archive::new(decoder);
-        let mut buf = Vec::new();
-        let mut count = 0u64;
-
-        for file in files.entries()? {
-            let mut file = file?;
-
-            let path = file.path()?.display().to_string();
-            if !path.contains("accounts/") {
-                continue;
-            }
-            buf.clear();
-            file.read_to_end(&mut buf)?;
-
-            let mut offset = 0;
-            while offset + size_of::<AccountHeader>() <= buf.len() {
-                let header = bytemuck::from_bytes::<AccountHeader>(
-                    &buf[offset..offset + size_of::<AccountHeader>()],
-                );
-                count += 1;
-                offset += size_of::<AccountHeader>() + header.data_len as usize;
-                offset = (offset + 7) & !7;
-            }
-        }
-
-        Ok(count)
     }
 }
 

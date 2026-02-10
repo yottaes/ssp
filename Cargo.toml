@@ -12,3 +12,5 @@ duckdb = { version = "1.4.4", features = ["bundled"] }
 crossbeam = "0.8.4"
 arrow = "56"                                             #Duckdb dep 
 parquet = "56"                                           #Duckdb dep
+clap = { version = "4.5.57", features = ["derive"] }
+bs58 = "0.5.1"

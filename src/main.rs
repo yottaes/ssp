@@ -1,8 +1,6 @@
-use std::env::args;
 use std::fs::File;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-
 mod parser;
 use crossbeam::channel;
 use parser::AccountHeader;
@@ -11,24 +9,34 @@ mod db;
 use crate::db::DuckDB;
 use parquet::arrow::ArrowWriter;
 
+mod filters;
+use filters::Filters;
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(version, about)]
+pub struct CliArgs {
+    #[arg(short, long)]
+    path: String,
+
+    #[arg(long)]
+    bench: bool,
+
+    #[command(flatten)]
+    filters: Filters,
+}
+
 const NUM_WRITERS: usize = 6;
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = args().collect();
-    if args.len() < 2 {
-        panic!("Please provide file path!");
-    }
-    let path = args[1].clone();
-
-    if args.get(2).is_some_and(|a| a == "--bench") {
-        let count = AccountHeader::parse_bench(&path)?;
-        println!("bench: {count} accounts");
-        return Ok(());
-    }
+    let args = CliArgs::parse();
+    let filters = args.filters.resolve()?;
 
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
 
-    let decompress = std::thread::spawn(move || AccountHeader::parse_threaded(&path, tx));
+    let decompress =
+        std::thread::spawn(move || AccountHeader::parse_threaded(&args.path, filters, tx));
 
     let schema = Arc::new(db::account_schema());
 
@@ -52,7 +60,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     rx.recv()
                 } {
-                    rows.fetch_add(1, Ordering::Relaxed);
+                    rows.fetch_add(batch.len() as u64, Ordering::Relaxed);
                     let record_batch = db::build_record_batch(&batch)?;
                     writer.write(&record_batch)?;
                 }
