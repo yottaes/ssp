@@ -9,3 +9,4 @@ accounts.db
 accounts_*.parquet
 .envrc
 .bin/
+node-list-test.json
