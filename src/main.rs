@@ -14,6 +14,7 @@ mod filters;
 use filters::Filters;
 
 mod rpc;
+mod bench;
 
 use clap::Parser;
 
@@ -40,6 +41,20 @@ const NUM_WRITERS: usize = 6;
 
 fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
+
+    if args.bench {
+        let path = args
+            .path
+            .as_deref()
+            .expect("--bench requires --path");
+        eprintln!("=== Stage 1: zstd only ===");
+        bench::run(std::fs::File::open(path)?);
+        eprintln!("\n=== Stage 2: zstd + tar ===");
+        bench::run_tar(std::fs::File::open(path)?);
+        eprintln!("\n=== Stage 3: zstd + tar + parse ===");
+        bench::run_full(std::fs::File::open(path)?);
+        return Ok(());
+    }
 
     let filters = args.filters.resolve()?;
 
