@@ -2,7 +2,6 @@ use bytemuck::{Pod, Zeroable};
 use crossbeam::channel::Sender;
 use std::{
     fmt,
-    fs::File,
     io::{BufReader, Read},
 };
 
@@ -41,12 +40,12 @@ impl fmt::Display for AccountHeader {
 
 impl AccountHeader {
     pub fn parse_threaded(
-        path: &str,
+        reader: impl Read + Send,
         filters: ResolvedFilters,
         tx: Sender<Vec<AccountHeader>>,
     ) -> anyhow::Result<()> {
-        let reader = open_file(path)?;
-        let mut decoder = zstd::Decoder::new(reader)?;
+        let buffered = BufReader::with_capacity(1024 * 1024, reader);
+        let mut decoder = zstd::Decoder::new(buffered)?;
         decoder.window_log_max(31)?; // allow up to 2GB window
 
         let mut files = tar::Archive::new(decoder);
@@ -99,7 +98,3 @@ impl AccountHeader {
     }
 }
 
-fn open_file(path: &str) -> Result<BufReader<File>, anyhow::Error> {
-    let file = std::fs::File::open(path)?;
-    Ok(BufReader::with_capacity(1024 * 1024, file))
-}
