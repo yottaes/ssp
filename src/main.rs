@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 mod parser;
 use crossbeam::channel;
 use parser::AccountHeader;
@@ -17,6 +18,7 @@ mod rpc;
 mod bench;
 
 use clap::Parser;
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -39,6 +41,18 @@ pub struct CliArgs {
 
 const NUM_WRITERS: usize = 6;
 
+fn format_rows(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B rows", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M rows", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K rows", n as f64 / 1_000.0)
+    } else {
+        format!("{n} rows")
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
 
@@ -58,31 +72,53 @@ fn main() -> anyhow::Result<()> {
 
     let filters = args.filters.resolve()?;
 
-    let reader: Box<dyn Read + Send> = if let Some(path) = &args.path {
-        Box::new(std::fs::File::open(path)?)
-    } else if args.discover {
-        let rt = tokio::runtime::Runtime::new()?;
-        let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
-        eprintln!(
-            "streaming from {} ({:.1} MB/s, {:.1} GB)",
-            source.url,
-            source.speed_mbps,
-            source.size.unwrap_or(0) as f64 / 1_073_741_824.0
+    let (reader, total_size): (Box<dyn Read + Send>, Option<u64>) =
+        if let Some(path) = &args.path {
+            let size = std::fs::metadata(path)?.len();
+            (Box::new(std::fs::File::open(path)?), Some(size))
+        } else if args.discover {
+            let rt = tokio::runtime::Runtime::new()?;
+            let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
+            eprintln!(
+                "streaming from {} ({:.1} MB/s, {:.1} GB)",
+                source.url,
+                source.speed_mbps,
+                source.size.unwrap_or(0) as f64 / 1_073_741_824.0
+            );
+            let resp = reqwest::blocking::Client::builder()
+                .timeout(None)
+                .build()?
+                .get(&source.url)
+                .send()?;
+            (Box::new(resp), source.size)
+        } else {
+            anyhow::bail!("provide --path <file> or --discover");
+        };
+
+    let pb = ProgressBar::new(total_size.unwrap_or(0));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) | {msg} | ETA: {eta}",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    if total_size.is_none() {
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {bytes} ({bytes_per_sec}) | {msg}")
+                .unwrap(),
         );
-        let resp = reqwest::blocking::Client::builder()
-            .timeout(None)
-            .build()?
-            .get(&source.url)
-            .send()?;
-        Box::new(resp)
-    } else {
-        anyhow::bail!("provide --path <file> or --discover");
-    };
+    }
+    pb.enable_steady_tick(Duration::from_millis(100));
+
+    let reader = pb.wrap_read(reader);
 
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
 
     let decompress =
-        std::thread::spawn(move || AccountHeader::parse_threaded(reader, filters, tx));
+        std::thread::spawn(move || AccountHeader::stream_parsed(reader, tx, &filters));
 
     let schema = Arc::new(db::account_schema());
 
@@ -107,8 +143,10 @@ fn main() -> anyhow::Result<()> {
                     rx.recv()
                 } {
                     rows.fetch_add(batch.len() as u64, Ordering::Relaxed);
-                    let record_batch = db::build_record_batch(&batch)?;
-                    writer.write(&record_batch)?;
+                    if !batch.is_empty() {
+                        let record_batch = db::build_record_batch(&batch)?;
+                        writer.write(&record_batch)?;
+                    }
                 }
                 writer.close()?;
 
@@ -119,13 +157,25 @@ fn main() -> anyhow::Result<()> {
 
     drop(rx);
 
+    let pb_msg = pb.clone();
+    let rows_msg = rows_received.clone();
+    let progress_handle = std::thread::spawn(move || {
+        while !pb_msg.is_finished() {
+            let r = rows_msg.load(Ordering::Relaxed);
+            pb_msg.set_message(format_rows(r));
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+
     decompress.join().expect("producer panicked")?;
 
     for handle in writers {
         handle.join().expect("writer panicked")?;
     }
 
-    eprintln!("Rows received {}", rows_received.load(Ordering::Relaxed));
+    let total_rows = rows_received.load(Ordering::Relaxed);
+    pb.finish_with_message(format_rows(total_rows));
+    let _ = progress_handle.join();
 
     eprintln!(
         "starving {} times",

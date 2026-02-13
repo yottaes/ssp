@@ -79,11 +79,11 @@ src/
 - [x] RPC node discovery with parallel probing and speed testing
 - [x] Network streaming — parse directly from HTTP, zero disk usage
 - [ ] Ratatui TUI
-  - [ ] Live progress bar during download/parse
+  - [x] Live progress bar during download/parse
   - [ ] Query interface
   - [ ] base58 display for pubkeys
 - [ ] Incremental snapshot merging (deltas on top of full)
-- [ ] Resume download on network failure
+- [ ] Resume download on network failure(restart stream)
 - [ ] CSV/JSON export
 - [ ] ClickHouse backend option
 

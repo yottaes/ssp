@@ -39,51 +39,32 @@ impl fmt::Display for AccountHeader {
 }
 
 impl AccountHeader {
-    pub fn parse_threaded(
+    /// Producer: zstd → tar → parse → send filtered account batches.
+    pub fn stream_parsed(
         reader: impl Read + Send,
-        filters: ResolvedFilters,
         tx: Sender<Vec<AccountHeader>>,
+        filters: &ResolvedFilters,
     ) -> anyhow::Result<()> {
         let buffered = BufReader::with_capacity(1024 * 1024, reader);
         let mut decoder = zstd::Decoder::new(buffered)?;
-        decoder.window_log_max(31)?; // allow up to 2GB window
+        decoder.window_log_max(31)?;
 
-        let mut files = tar::Archive::new(decoder);
+        let mut archive = tar::Archive::new(decoder);
         let mut blocked: u64 = 0;
         let mut buf = Vec::new();
 
-        for file in files.entries()? {
-            let mut file = file?;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
 
-            let path = file.path()?.display().to_string();
+            let path = entry.path()?.display().to_string();
             if !path.contains("accounts/") {
                 continue;
             }
+
             buf.clear();
-            file.read_to_end(&mut buf)?;
+            entry.read_to_end(&mut buf)?;
 
-            let mut offset = 0;
-
-            let mut batch = Vec::new();
-
-            while offset + size_of::<AccountHeader>() <= buf.len() {
-                //iterating while there is at least one header
-                let header = bytemuck::from_bytes::<AccountHeader>(
-                    &buf[offset..offset + size_of::<AccountHeader>()],
-                );
-
-                offset += size_of::<AccountHeader>();
-
-                let data = &buf[offset..offset + header.data_len as usize];
-
-                offset += data.len() as usize;
-                offset = (offset + 7) & !7; // align to next 8-byte boundary
-
-                if !filters.matches(header) {
-                    continue;
-                }
-                batch.push(*header);
-            }
+            let batch = Self::parse_accounts(&buf, filters);
 
             if tx.is_full() {
                 blocked += 1;
@@ -95,6 +76,29 @@ impl AccountHeader {
 
         eprintln!("producer blocked {blocked} times (channel was full)");
         Ok(())
+    }
+
+    /// Parse raw AppendVec buffer into filtered account headers.
+    pub fn parse_accounts(buf: &[u8], filters: &ResolvedFilters) -> Vec<AccountHeader> {
+        let mut offset = 0;
+        let mut batch = Vec::new();
+
+        while offset + size_of::<AccountHeader>() <= buf.len() {
+            let header = bytemuck::from_bytes::<AccountHeader>(
+                &buf[offset..offset + size_of::<AccountHeader>()],
+            );
+
+            offset += size_of::<AccountHeader>();
+            offset += header.data_len as usize;
+            offset = (offset + 7) & !7;
+
+            if !filters.matches(header) {
+                continue;
+            }
+            batch.push(*header);
+        }
+
+        batch
     }
 }
 
