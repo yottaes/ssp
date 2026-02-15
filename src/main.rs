@@ -1,24 +1,18 @@
+use clap::Parser;
+use crossbeam::channel;
+use indicatif::{ProgressBar, ProgressStyle};
+use parquet::arrow::ArrowWriter;
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-mod parser;
-use crossbeam::channel;
-use parser::AccountHeader;
 
-mod db;
-use crate::db::DuckDB;
-use parquet::arrow::ArrowWriter;
-
-mod filters;
-use filters::Filters;
-
-mod rpc;
-mod bench;
-
-use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
+use ssp::bench;
+use ssp::db::{self, DuckDB};
+use ssp::filters::Filters;
+use ssp::parser::AccountHeader;
+use ssp::rpc;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -57,10 +51,7 @@ fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
 
     if args.bench {
-        let path = args
-            .path
-            .as_deref()
-            .expect("--bench requires --path");
+        let path = args.path.as_deref().expect("--bench requires --path");
         eprintln!("=== Stage 1: zstd only ===");
         bench::run(std::fs::File::open(path)?);
         eprintln!("\n=== Stage 2: zstd + tar ===");
@@ -72,28 +63,27 @@ fn main() -> anyhow::Result<()> {
 
     let filters = args.filters.resolve()?;
 
-    let (reader, total_size): (Box<dyn Read + Send>, Option<u64>) =
-        if let Some(path) = &args.path {
-            let size = std::fs::metadata(path)?.len();
-            (Box::new(std::fs::File::open(path)?), Some(size))
-        } else if args.discover {
-            let rt = tokio::runtime::Runtime::new()?;
-            let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
-            eprintln!(
-                "streaming from {} ({:.1} MB/s, {:.1} GB)",
-                source.url,
-                source.speed_mbps,
-                source.size.unwrap_or(0) as f64 / 1_073_741_824.0
-            );
-            let resp = reqwest::blocking::Client::builder()
-                .timeout(None)
-                .build()?
-                .get(&source.url)
-                .send()?;
-            (Box::new(resp), source.size)
-        } else {
-            anyhow::bail!("provide --path <file> or --discover");
-        };
+    let (reader, total_size): (Box<dyn Read + Send>, Option<u64>) = if let Some(path) = &args.path {
+        let size = std::fs::metadata(path)?.len();
+        (Box::new(std::fs::File::open(path)?), Some(size))
+    } else if args.discover {
+        let rt = tokio::runtime::Runtime::new()?;
+        let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
+        eprintln!(
+            "streaming from {} ({:.1} MB/s, {:.1} GB)",
+            source.url,
+            source.speed_mbps,
+            source.size.unwrap_or(0) as f64 / 1_073_741_824.0
+        );
+        let resp = reqwest::blocking::Client::builder()
+            .timeout(None)
+            .build()?
+            .get(&source.url)
+            .send()?;
+        (Box::new(resp), source.size)
+    } else {
+        anyhow::bail!("provide --path <file> or --discover");
+    };
 
     let pb = ProgressBar::new(total_size.unwrap_or(0));
     pb.set_style(
@@ -117,8 +107,7 @@ fn main() -> anyhow::Result<()> {
 
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
 
-    let decompress =
-        std::thread::spawn(move || AccountHeader::stream_parsed(reader, tx, &filters));
+    let decompress = std::thread::spawn(move || AccountHeader::stream_parsed(reader, tx, &filters));
 
     let schema = Arc::new(db::account_schema());
 

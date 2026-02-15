@@ -5,6 +5,7 @@ use std::{
     io::{BufReader, Read},
 };
 
+use crate::Pubkey;
 use crate::filters::ResolvedFilters;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
@@ -12,10 +13,10 @@ use crate::filters::ResolvedFilters;
 pub struct AccountHeader {
     pub write_version: u64,
     pub data_len: u64,
-    pub pubkey: [u8; 32],
+    pub pubkey: Pubkey,
     pub lamports: u64,
     pub rent_epoch: u64,
-    pub owner: [u8; 32],
+    pub owner: Pubkey,
     pub executable: u8,
     pub padding: [u8; 7],
     pub hash: [u8; 32],
@@ -28,10 +29,10 @@ impl fmt::Display for AccountHeader {
              rent_epoch: {}, owner: {}, executable: {}, hash: {}",
             self.write_version,
             self.data_len,
-            bs58::encode(&self.pubkey).into_string(),
+            self.pubkey,
             self.lamports,
             self.rent_epoch,
-            bs58::encode(&self.owner).into_string(),
+            self.owner,
             self.executable,
             bs58::encode(&self.hash).into_string(),
         )

@@ -1,3 +1,4 @@
+use crate::Pubkey;
 use crate::parser::AccountHeader;
 use clap::Args;
 
@@ -17,18 +18,18 @@ pub struct Filters {
 }
 
 pub struct ResolvedFilters {
-    pub owner: Option<[u8; 32]>,
+    pub owner: Option<Pubkey>,
     pub hash: Option<[u8; 32]>,
-    pub pubkey: Option<[u8; 32]>,
+    pub pubkey: Option<Pubkey>,
     pub include_dead: bool,
 }
 
 impl Filters {
     pub fn resolve(&self) -> Result<ResolvedFilters, anyhow::Error> {
         Ok(ResolvedFilters {
-            owner: decode_b58_32(&self.owner)?,
+            owner: Pubkey::try_from_b58(self.owner.as_deref())?,
             hash: decode_b58_32(&self.hash)?,
-            pubkey: decode_b58_32(&self.pubkey)?,
+            pubkey: Pubkey::try_from_b58(self.pubkey.as_deref())?,
             include_dead: self.include_dead,
         })
     }

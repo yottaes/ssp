@@ -1,4 +1,4 @@
-use crate::AccountHeader;
+use crate::parser::AccountHeader;
 use arrow::array::{ArrayRef, BinaryArray, BooleanArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -18,13 +18,13 @@ pub fn account_schema() -> Schema {
 
 pub fn build_record_batch(headers: &[AccountHeader]) -> anyhow::Result<RecordBatch> {
     let pubkeys: ArrayRef = Arc::new(BinaryArray::from_iter_values(
-        headers.iter().map(|h| h.pubkey.as_slice()),
+        headers.iter().map(|h| h.pubkey),
     ));
     let lamports: ArrayRef = Arc::new(UInt64Array::from_iter_values(
         headers.iter().map(|h| h.lamports),
     ));
     let owners: ArrayRef = Arc::new(BinaryArray::from_iter_values(
-        headers.iter().map(|h| h.owner.as_slice()),
+        headers.iter().map(|h| h.owner),
     ));
     let data_lens: ArrayRef = Arc::new(UInt64Array::from_iter_values(
         headers.iter().map(|h| h.data_len),
