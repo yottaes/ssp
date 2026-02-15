@@ -87,6 +87,14 @@ src/
 - [ ] CSV/JSON export
 - [ ] ClickHouse backend option
 
+## Status
+
+- Temporarily frozen.
+
+## Checkpoint
+
+- Data blobs parsing
+
 ## Stack
 
 Rust 2024, bytemuck, zstd, tar, crossbeam, arrow/parquet, DuckDB, reqwest, tokio, clap
