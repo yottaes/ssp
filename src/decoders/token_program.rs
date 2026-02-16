@@ -77,3 +77,6 @@ impl TokenAccount {
 
 const _: () = assert!(size_of::<Mint>() == Mint::SIZE);
 const _: () = assert!(size_of::<TokenAccount>() == TokenAccount::SIZE);
+
+//C:
+//Embed filters?
