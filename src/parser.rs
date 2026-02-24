@@ -1,12 +1,12 @@
-use bytemuck::{Pod, Zeroable};
-use crossbeam::channel::Sender;
-use std::{
-    fmt,
-    io::{BufReader, Read},
+use {
+    crate::{Pubkey, filters::ResolvedFilters},
+    bytemuck::{Pod, Zeroable},
+    crossbeam::channel::Sender,
+    std::{
+        fmt,
+        io::{BufReader, Read},
+    },
 };
-
-use crate::Pubkey;
-use crate::filters::ResolvedFilters;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
 #[repr(C)]
@@ -90,7 +90,9 @@ impl AccountHeader {
             );
 
             offset += size_of::<AccountHeader>();
+
             offset += header.data_len as usize;
+
             offset = (offset + 7) & !7;
 
             if !filters.matches(header) {
@@ -102,4 +104,3 @@ impl AccountHeader {
         batch
     }
 }
-

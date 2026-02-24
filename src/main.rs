@@ -33,7 +33,7 @@ pub struct CliArgs {
     filters: Filters,
 }
 
-const NUM_WRITERS: usize = 6;
+const NUM_WRITERS: usize = 3;
 
 fn format_rows(n: u64) -> String {
     if n >= 1_000_000_000 {
