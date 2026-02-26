@@ -2481,7 +2481,6 @@ dependencies = [
  "reqwest 0.13.2",
  "serde",
  "serde_json",
- "tar",
  "tokio",
  "zstd",
 ]

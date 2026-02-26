@@ -41,7 +41,7 @@ pub struct CliArgs {
     filters: Filters,
 }
 
-const NUM_WRITERS: usize = 1;
+const NUM_WRITERS: usize = 2;
 const NUM_PARSERS: usize = 4;
 const NUM_DECODED_WRITERS: usize = 2;
 

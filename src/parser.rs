@@ -42,35 +42,88 @@ impl fmt::Display for AccountHeader {
     }
 }
 
+pub const TAR_BLOCK: usize = 512;
+
+/// Parse octal ASCII (tar stores sizes as octal strings).
+pub fn parse_octal(bytes: &[u8]) -> u64 {
+    // GNU tar extension: if the high bit is set, it's binary big-endian
+    if !bytes.is_empty() && bytes[0] & 0x80 != 0 {
+        return bytes[1..].iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
+    }
+    let mut n = 0u64;
+    for &b in bytes {
+        if b == 0 || b == b' ' {
+            break;
+        }
+        n = n * 8 + (b - b'0') as u64;
+    }
+    n
+}
+
+/// Check if tar header path (bytes 0..100) contains "accounts/".
+pub fn is_accounts_entry(header: &[u8; TAR_BLOCK]) -> bool {
+    // type flag: byte 156, '0' or '\0' = regular file
+    let type_flag = header[156];
+    if type_flag != b'0' && type_flag != 0 {
+        return false;
+    }
+    header[..100].windows(9).any(|w| w == b"accounts/")
+}
+
 impl AccountHeader {
-    /// Stage 1: zstd → tar → send raw buffers. Nothing else on this thread.
+    /// Stage 1: zstd → lightweight tar → send raw buffers.
     pub fn stream_raw(
         reader: impl Read + Send,
         raw_tx: Sender<Vec<u8>>,
     ) -> anyhow::Result<()> {
-        let buffered = BufReader::with_capacity(1024 * 1024, reader);
+        let buffered = BufReader::with_capacity(4 * 1024 * 1024, reader);
         let mut decoder = zstd::Decoder::new(buffered)?;
         decoder.window_log_max(31)?;
 
-        let mut archive = tar::Archive::new(decoder);
+        let mut header = [0u8; TAR_BLOCK];
+        let mut skip_buf = [0u8; 65536];
         let mut blocked: u64 = 0;
 
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-
-            let path = entry.path()?.display().to_string();
-            if !path.contains("accounts/") {
-                continue;
+        loop {
+            match decoder.read_exact(&mut header) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e.into()),
             }
 
-            let size = entry.header().size()? as usize;
-            let mut buf = Vec::with_capacity(size);
-            entry.read_to_end(&mut buf)?;
-
-            if raw_tx.is_full() {
-                blocked += 1;
+            // Zero block = end of archive (name starts with NUL)
+            if header[0] == 0 {
+                break;
             }
-            raw_tx.send(buf)?;
+
+            let size = parse_octal(&header[124..136]) as usize;
+            let padded = (size + TAR_BLOCK - 1) & !(TAR_BLOCK - 1);
+
+            if is_accounts_entry(&header) {
+                let mut buf = Vec::with_capacity(size);
+                // SAFETY: read_exact writes exactly `size` bytes, fully initializing the buffer
+                unsafe { buf.set_len(size); }
+                decoder.read_exact(&mut buf)?;
+
+                // Skip padding bytes to next 512 boundary
+                let padding = padded - size;
+                if padding > 0 {
+                    decoder.read_exact(&mut skip_buf[..padding])?;
+                }
+
+                if raw_tx.is_full() {
+                    blocked += 1;
+                }
+                raw_tx.send(buf)?;
+            } else {
+                // Skip entry data efficiently
+                let mut remaining = padded;
+                while remaining > 0 {
+                    let chunk = remaining.min(skip_buf.len());
+                    decoder.read_exact(&mut skip_buf[..chunk])?;
+                    remaining -= chunk;
+                }
+            }
         }
 
         eprintln!("decompressor blocked {blocked} times (raw channel full)");
