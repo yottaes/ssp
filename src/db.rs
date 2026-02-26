@@ -80,6 +80,12 @@ impl DuckDB {
             "SELECT * FROM '{}' ORDER BY {} DESC LIMIT 10",
             parquet_path, sort_col
         );
+
+        //Check for data validity
+        // let sql = format!(
+        //     "SELECT * FROM '{}' WHERE {} < 18446744073709551615 ORDER BY {} DESC LIMIT 10",
+        //     parquet_path, sort_col, sort_col
+        // );
         let mut stmt = self.connection.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let mut cols = Vec::new();

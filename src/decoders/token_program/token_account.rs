@@ -1,5 +1,5 @@
 use arrow::{
-    array::{BinaryBuilder, RecordBatch, UInt64Builder, UInt8Builder},
+    array::{BinaryBuilder, RecordBatch, UInt8Builder, UInt64Builder},
     datatypes::{DataType, Field, Schema},
 };
 use std::sync::Arc;
@@ -72,6 +72,15 @@ impl crate::decoders::Decoder for TokenAccountDecoder {
     fn decode(&mut self, pubkey: Pubkey, data: &[u8]) -> Option<RecordBatch> {
         let acc = bytemuck::from_bytes::<TokenAccount>(data);
 
+        // if acc.amount == u64::MAX {
+        //     eprintln!("SUSPICIOUS ACCOUNT: {}", pubkey);
+        //     eprintln!("  Data Len: {}", data.len()); // <--- CHECK THIS
+        //
+        //     // Print offsets 60 to 80 to see the "Amount" field
+        //     let start = 60.min(data.len());
+        //     let end = 80.min(data.len());
+        //     eprintln!("  Bytes[60..80]: {:02x?}", &data[start..end]);
+        // }
         self.pubkey_b.append_value(pubkey);
         self.mint_b.append_value(acc.mint);
         self.owner_b.append_value(acc.owner);
