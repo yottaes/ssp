@@ -43,10 +43,10 @@ cargo run --release -- --discover --incremental --include-dead
 
 109GB full snapshot (`snapshot-389758228.tar.zst`), M1-series Mac:
 
-| Stage                              | Time  | Throughput |
-| ---------------------------------- | ----- | ---------- |
-| Single-threaded (parse + write)    | ~887s | ~123 MB/s  |
-| Multi-threaded (6 parquet writers) | ~146s | ~746 MB/s  |
+| Stage                               | Time  | Throughput |
+| ----------------------------------- | ----- | ---------- |
+| Single-threaded (parse + write)     | ~887s | ~123 MB/s  |
+| Multi-threaded (2+ parquet writers) | ~146s | ~746 MB/s  |
 
 **6.1x speedup** from multithreaded parquet writers. Bottleneck is zstd decompression (single-threaded, sequential tar).
 
@@ -89,7 +89,7 @@ src/
 
 ## Status
 
-- Temporarily frozen.
+- In Development.
 
 ## Checkpoint
 
