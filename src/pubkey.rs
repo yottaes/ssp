@@ -7,10 +7,9 @@ use bytemuck::{Pod, Zeroable};
 pub struct Pubkey([u8; 32]);
 
 impl Pubkey {
-    pub const TOKEN_PROGRAM: Self = Self([
-        6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172, 28, 180, 133,
-        237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
-    ]);
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 
     /// Decode a base58 string into a Pubkey.
     pub fn from_b58(s: &str) -> Result<Self, anyhow::Error> {

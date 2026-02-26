@@ -1,30 +1,18 @@
 pub mod mint;
 pub mod token_account;
 
+use super::COptionPubkey;
 use bytemuck::{Pod, Zeroable};
 
 use crate::Pubkey;
 
 pub const BATCH_THRESHOLD: usize = 8192;
+pub const TOKEN_PROGRAM: Pubkey = Pubkey::new([
+    6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172, 28, 180, 133, 237,
+    95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
+]);
 
 //Solana specific C like OptionPubkey struct for C compatability.
-#[derive(Zeroable, Clone, Copy, Debug)]
-#[repr(C, packed)]
-pub struct COptionPubkey {
-    tag: u32, // 0 = None, 1 = Some
-    value: Pubkey,
-}
-unsafe impl Pod for COptionPubkey {}
-
-impl COptionPubkey {
-    pub fn get(&self) -> Option<Pubkey> {
-        if self.tag == 1 {
-            Some(self.value)
-        } else {
-            None
-        }
-    }
-}
 
 #[derive(Zeroable, Clone, Copy, Debug)]
 #[repr(C, packed)]
