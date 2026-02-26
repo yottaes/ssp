@@ -2,7 +2,7 @@ use {
     crate::{Pubkey, filters::ResolvedFilters},
     arrow::array::RecordBatch,
     bytemuck::{Pod, Zeroable},
-    crossbeam::channel::Sender,
+    crossbeam::channel::{Receiver, Sender},
     std::{
         collections::HashMap,
         fmt,
@@ -48,7 +48,9 @@ pub const TAR_BLOCK: usize = 512;
 pub fn parse_octal(bytes: &[u8]) -> u64 {
     // GNU tar extension: if the high bit is set, it's binary big-endian
     if !bytes.is_empty() && bytes[0] & 0x80 != 0 {
-        return bytes[1..].iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
+        return bytes[1..]
+            .iter()
+            .fold(0u64, |acc, &b| (acc << 8) | b as u64);
     }
     let mut n = 0u64;
     for &b in bytes {
@@ -75,6 +77,7 @@ impl AccountHeader {
     pub fn stream_raw(
         reader: impl Read + Send,
         raw_tx: Sender<Vec<u8>>,
+        recycle_rx: Receiver<Vec<u8>>,
     ) -> anyhow::Result<()> {
         let buffered = BufReader::with_capacity(4 * 1024 * 1024, reader);
         let mut decoder = zstd::Decoder::new(buffered)?;
@@ -100,9 +103,18 @@ impl AccountHeader {
             let padded = (size + TAR_BLOCK - 1) & !(TAR_BLOCK - 1);
 
             if is_accounts_entry(&header) {
-                let mut buf = Vec::with_capacity(size);
-                // SAFETY: read_exact writes exactly `size` bytes, fully initializing the buffer
-                unsafe { buf.set_len(size); }
+                // let mut buf = Vec::with_capacity(size);
+                // // SAFETY: read_exact writes exactly `size` bytes, fully initializing the buffer
+                // unsafe {
+                //     buf.set_len(size);
+                // }
+                // decoder.read_exact(&mut buf)?;
+                //
+                let mut buf: Vec<u8> = recycle_rx
+                    .try_recv()
+                    .unwrap_or_else(|_| Vec::with_capacity(size));
+                // let mut buf = vec![0u8; size];
+                buf.resize(size, 0);
                 decoder.read_exact(&mut buf)?;
 
                 // Skip padding bytes to next 512 boundary

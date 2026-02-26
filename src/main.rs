@@ -118,7 +118,10 @@ fn main() -> anyhow::Result<()> {
     // Stage 1: zstd → tar → raw buffers (dedicated thread, no parsing)
     let (raw_tx, raw_rx) = channel::bounded::<Vec<u8>>(128);
 
-    let decompress = std::thread::spawn(move || AccountHeader::stream_raw(reader, raw_tx));
+    let (recycle_tx, recycle_rx) = crossbeam::channel::bounded(1024);
+
+    let decompress =
+        std::thread::spawn(move || AccountHeader::stream_raw(reader, raw_tx, recycle_rx));
 
     // Stage 2: parse raw buffers → account headers + decoded batches (N parser threads)
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
@@ -140,6 +143,7 @@ fn main() -> anyhow::Result<()> {
             let filters = filters.clone();
             let blocked_tx = parser_blocked_tx.clone();
             let blocked_decoded = parser_blocked_decoded.clone();
+            let recycle_tx = recycle_tx.clone();
 
             std::thread::spawn(move || -> anyhow::Result<()> {
                 let mut decoders: Vec<Box<dyn Decoder>> = vec![
@@ -167,6 +171,8 @@ fn main() -> anyhow::Result<()> {
                         }
                         tx.send(batch)?;
                     }
+
+                    let _ = recycle_tx.send(buf);
                 }
 
                 // Flush remaining decoded data
