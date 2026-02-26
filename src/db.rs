@@ -69,6 +69,48 @@ impl DuckDB {
         Ok(DuckDB { connection: conn })
     }
 
+    pub fn query_decoded(&self, parquet_path: &str, sort_col: &str) -> Result<(), anyhow::Error> {
+        let count: i64 = self
+            .connection
+            .prepare(&format!("SELECT COUNT(*) FROM '{}'", parquet_path))?
+            .query_row([], |row| row.get(0))?;
+        println!("  total: {}", count);
+
+        let sql = format!(
+            "SELECT * FROM '{}' ORDER BY {} DESC LIMIT 10",
+            parquet_path, sort_col
+        );
+        let mut stmt = self.connection.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let mut cols = Vec::new();
+            let mut i = 0;
+            loop {
+                match row.get::<_, duckdb::types::Value>(i) {
+                    Ok(val) => cols.push(val),
+                    Err(_) => break,
+                }
+                i += 1;
+            }
+            Ok(cols)
+        })?;
+
+        for row in rows {
+            let cols = row?;
+            for val in &cols {
+                match val {
+                    duckdb::types::Value::Blob(bytes) => {
+                        print!("{} ", bs58::encode(bytes).into_string())
+                    }
+                    duckdb::types::Value::Null => print!("None "),
+                    other => print!("{:?} ", other),
+                }
+            }
+            println!();
+        }
+
+        Ok(())
+    }
+
     pub fn query_top_accounts(&self, parquet_path: &str) -> Result<i64, anyhow::Error> {
         let mut count_stmt = self
             .connection

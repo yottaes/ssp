@@ -1,13 +1,21 @@
+use arrow::array::RecordBatch;
 use clap::Parser;
 use crossbeam::channel;
 use indicatif::{ProgressBar, ProgressStyle};
 use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
+use ssp::decoders::Decoder;
+use ssp::decoders::token_program::mint::MintDecoder;
+use ssp::decoders::token_program::token_account::TokenAccountDecoder;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ssp::Pubkey;
 use ssp::bench;
 use ssp::db::{self, DuckDB};
 use ssp::filters::Filters;
@@ -33,7 +41,9 @@ pub struct CliArgs {
     filters: Filters,
 }
 
-const NUM_WRITERS: usize = 3;
+const NUM_WRITERS: usize = 1;
+const NUM_PARSERS: usize = 4;
+const NUM_DECODED_WRITERS: usize = 2;
 
 fn format_rows(n: u64) -> String {
     if n >= 1_000_000_000 {
@@ -105,14 +115,78 @@ fn main() -> anyhow::Result<()> {
 
     let reader = pb.wrap_read(reader);
 
+    // Stage 1: zstd → tar → raw buffers (dedicated thread, no parsing)
+    let (raw_tx, raw_rx) = channel::bounded::<Vec<u8>>(128);
+
+    let decompress = std::thread::spawn(move || AccountHeader::stream_raw(reader, raw_tx));
+
+    // Stage 2: parse raw buffers → account headers + decoded batches (N parser threads)
     let (tx, rx) = channel::bounded::<Vec<AccountHeader>>(128);
+    let (decoded_tx, decoded_rx) = channel::bounded::<(&'static str, RecordBatch)>(256);
 
-    let decompress = std::thread::spawn(move || AccountHeader::stream_parsed(reader, tx, &filters));
-
-    let schema = Arc::new(db::account_schema());
+    let filters = Arc::new(filters);
 
     let rows_received = Arc::new(AtomicU64::new(0));
-    let consumer_starved = Arc::new(AtomicU64::new(0));
+    let acct_writer_starved = Arc::new(AtomicU64::new(0));
+    let decoded_writer_starved = Arc::new(AtomicU64::new(0));
+    let parser_blocked_tx = Arc::new(AtomicU64::new(0));
+    let parser_blocked_decoded = Arc::new(AtomicU64::new(0));
+
+    let parsers: Vec<_> = (0..NUM_PARSERS)
+        .map(|_| {
+            let raw_rx = raw_rx.clone();
+            let tx = tx.clone();
+            let decoded_tx = decoded_tx.clone();
+            let filters = filters.clone();
+            let blocked_tx = parser_blocked_tx.clone();
+            let blocked_decoded = parser_blocked_decoded.clone();
+
+            std::thread::spawn(move || -> anyhow::Result<()> {
+                let mut decoders: Vec<Box<dyn Decoder>> = vec![
+                    Box::new(MintDecoder::new()),
+                    Box::new(TokenAccountDecoder::new()),
+                ];
+
+                let mut decoder_map: HashMap<Pubkey, Vec<usize>> = HashMap::new();
+                for (i, dec) in decoders.iter().enumerate() {
+                    decoder_map.entry(dec.owner()).or_default().push(i);
+                }
+
+                while let Ok(buf) = raw_rx.recv() {
+                    let batch = AccountHeader::parse_accounts(
+                        &buf,
+                        &filters,
+                        &mut decoders,
+                        &decoder_map,
+                        &decoded_tx,
+                        &blocked_decoded,
+                    );
+                    if !batch.is_empty() {
+                        if tx.is_full() {
+                            blocked_tx.fetch_add(1, Ordering::Relaxed);
+                        }
+                        tx.send(batch)?;
+                    }
+                }
+
+                // Flush remaining decoded data
+                for dec in decoders.iter_mut() {
+                    if let Some(batch) = dec.flush() {
+                        let _ = decoded_tx.send((dec.name(), batch));
+                    }
+                }
+
+                Ok(())
+            })
+        })
+        .collect();
+
+    drop(raw_rx);
+    drop(tx);
+    drop(decoded_tx);
+
+    // Stage 3: write parquet (account writers + decoded writer)
+    let schema = Arc::new(db::account_schema());
 
     let writers: Vec<_> = (0..NUM_WRITERS)
         .map(|i| {
@@ -120,10 +194,15 @@ fn main() -> anyhow::Result<()> {
             let schema = schema.clone();
 
             let rows = rows_received.clone();
-            let starving = consumer_starved.clone();
+            let starving = acct_writer_starved.clone();
             std::thread::spawn(move || -> anyhow::Result<()> {
                 let file = File::create(format!("accounts_{i}.parquet"))?;
-                let mut writer = ArrowWriter::try_new(file, schema, None)?;
+                let props = WriterProperties::builder()
+                    .set_dictionary_enabled(false)
+                    .set_compression(Compression::SNAPPY)
+                    .set_max_row_group_size(1_000_000)
+                    .build();
+                let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
 
                 while let Ok(batch) = {
                     if rx.is_empty() {
@@ -146,6 +225,41 @@ fn main() -> anyhow::Result<()> {
 
     drop(rx);
 
+    let decoded_writers: Vec<_> = (0..NUM_DECODED_WRITERS)
+        .map(|i| {
+            let decoded_rx = decoded_rx.clone();
+            let starving = decoded_writer_starved.clone();
+            std::thread::spawn(move || -> anyhow::Result<()> {
+                let mut writers: HashMap<&'static str, ArrowWriter<File>> = HashMap::new();
+                while let Ok((name, batch)) = {
+                    if decoded_rx.is_empty() {
+                        starving.fetch_add(1, Ordering::Relaxed);
+                    }
+                    decoded_rx.recv()
+                } {
+                    let writer = writers.entry(name).or_insert_with(|| {
+                        let file = File::create(format!("{name}_{i}.parquet")).unwrap();
+                        let props = WriterProperties::builder()
+                            .set_dictionary_enabled(false)
+                            .set_compression(Compression::SNAPPY)
+                            .set_max_row_group_size(1_000_000)
+                            .build();
+                        ArrowWriter::try_new(file, batch.schema(), Some(props)).unwrap()
+                    });
+                    writer.write(&batch)?;
+                }
+
+                for (_, writer) in writers {
+                    writer.close()?;
+                }
+
+                Ok(())
+            })
+        })
+        .collect();
+
+    drop(decoded_rx);
+
     let pb_msg = pb.clone();
     let rows_msg = rows_received.clone();
     let progress_handle = std::thread::spawn(move || {
@@ -156,10 +270,16 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    decompress.join().expect("producer panicked")?;
-
+    decompress.join().expect("decompressor panicked")?;
+    for handle in parsers {
+        handle.join().expect("parser panicked")?;
+    }
     for handle in writers {
         handle.join().expect("writer panicked")?;
+    }
+
+    for handle in decoded_writers {
+        handle.join().expect("decoded writer panicked")?;
     }
 
     let total_rows = rows_received.load(Ordering::Relaxed);
@@ -167,13 +287,26 @@ fn main() -> anyhow::Result<()> {
     let _ = progress_handle.join();
 
     eprintln!(
-        "starving {} times",
-        consumer_starved.load(Ordering::Relaxed)
+        "parsers blocked: tx={} decoded={}  |  writers starved: acct={} decoded={}",
+        parser_blocked_tx.load(Ordering::Relaxed),
+        parser_blocked_decoded.load(Ordering::Relaxed),
+        acct_writer_starved.load(Ordering::Relaxed),
+        decoded_writer_starved.load(Ordering::Relaxed),
     );
 
     let db = DuckDB::open()?;
     let count = db.query_top_accounts("accounts_*.parquet")?;
-    println!("total: {}", count);
+    println!("total accounts: {}", count);
+
+    if std::path::Path::new("mints_0.parquet").exists() {
+        println!("\n--- Mints ---");
+        db.query_decoded("mints_*.parquet", "supply")?;
+    }
+
+    if std::path::Path::new("token_accounts_0.parquet").exists() {
+        println!("\n--- Token Accounts ---");
+        db.query_decoded("token_accounts_*.parquet", "amount")?;
+    }
 
     Ok(())
 }

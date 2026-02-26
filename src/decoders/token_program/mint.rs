@@ -67,7 +67,7 @@ impl MintDecoder {
 }
 
 impl crate::decoders::Decoder for MintDecoder {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mints"
     }
 

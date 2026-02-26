@@ -53,7 +53,7 @@ impl TokenAccountDecoder {
 }
 
 impl crate::decoders::Decoder for TokenAccountDecoder {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "token_accounts"
     }
 

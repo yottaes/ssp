@@ -7,6 +7,10 @@ ssp
 accounts.db
 .claude/
 accounts_*.parquet
+*.parquet
 .envrc
 .bin/
 node-list-test.json
+
+.DS_Store
+

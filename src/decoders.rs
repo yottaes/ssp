@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 pub mod token_program;
 
 pub trait Decoder: Send {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn owner(&self) -> Pubkey;
     fn schema(&self) -> &Schema;
     fn matches(&self, owner: &Pubkey, data_len: u64) -> bool;

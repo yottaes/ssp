@@ -1,10 +1,13 @@
 use {
     crate::{Pubkey, filters::ResolvedFilters},
+    arrow::array::RecordBatch,
     bytemuck::{Pod, Zeroable},
     crossbeam::channel::Sender,
     std::{
+        collections::HashMap,
         fmt,
         io::{BufReader, Read},
+        sync::atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -40,11 +43,10 @@ impl fmt::Display for AccountHeader {
 }
 
 impl AccountHeader {
-    /// Producer: zstd → tar → parse → send filtered account batches.
-    pub fn stream_parsed(
+    /// Stage 1: zstd → tar → send raw buffers. Nothing else on this thread.
+    pub fn stream_raw(
         reader: impl Read + Send,
-        tx: Sender<Vec<AccountHeader>>,
-        filters: &ResolvedFilters,
+        raw_tx: Sender<Vec<u8>>,
     ) -> anyhow::Result<()> {
         let buffered = BufReader::with_capacity(1024 * 1024, reader);
         let mut decoder = zstd::Decoder::new(buffered)?;
@@ -52,7 +54,6 @@ impl AccountHeader {
 
         let mut archive = tar::Archive::new(decoder);
         let mut blocked: u64 = 0;
-        let mut buf = Vec::new();
 
         for entry in archive.entries()? {
             let mut entry = entry?;
@@ -62,25 +63,29 @@ impl AccountHeader {
                 continue;
             }
 
-            buf.clear();
+            let size = entry.header().size()? as usize;
+            let mut buf = Vec::with_capacity(size);
             entry.read_to_end(&mut buf)?;
 
-            let batch = Self::parse_accounts(&buf, filters);
-
-            if tx.is_full() {
+            if raw_tx.is_full() {
                 blocked += 1;
             }
-            if !batch.is_empty() {
-                tx.send(batch)?;
-            }
+            raw_tx.send(buf)?;
         }
 
-        eprintln!("producer blocked {blocked} times (channel was full)");
+        eprintln!("decompressor blocked {blocked} times (raw channel full)");
         Ok(())
     }
 
-    /// Parse raw AppendVec buffer into filtered account headers.
-    pub fn parse_accounts(buf: &[u8], filters: &ResolvedFilters) -> Vec<AccountHeader> {
+    /// Stage 2: parse raw AppendVec buffer into filtered account headers + decoded batches.
+    pub fn parse_accounts(
+        buf: &[u8],
+        filters: &ResolvedFilters,
+        decoders: &mut [Box<dyn crate::decoders::Decoder>],
+        decoder_map: &HashMap<Pubkey, Vec<usize>>,
+        decoded_tx: &Sender<(&'static str, RecordBatch)>,
+        blocked_decoded: &AtomicU64,
+    ) -> Vec<AccountHeader> {
         let mut offset = 0;
         let mut batch = Vec::new();
 
@@ -91,9 +96,26 @@ impl AccountHeader {
 
             offset += size_of::<AccountHeader>();
 
+            let data = &buf[offset..offset + header.data_len as usize];
+
             offset += header.data_len as usize;
 
             offset = (offset + 7) & !7;
+
+            // O(1) lookup by owner — skips entirely for programs without decoders
+            if let Some(indices) = decoder_map.get(&header.owner) {
+                for &idx in indices {
+                    if decoders[idx].matches(&header.owner, header.data_len) {
+                        if let Some(batch) = decoders[idx].decode(header.pubkey, data) {
+                            if decoded_tx.is_full() {
+                                blocked_decoded.fetch_add(1, Ordering::Relaxed);
+                            }
+                            let _ = decoded_tx.send((decoders[idx].name(), batch));
+                        }
+                        break;
+                    }
+                }
+            }
 
             if !filters.matches(header) {
                 continue;
