@@ -1,11 +1,11 @@
 use arrow::{
-    array::{BinaryBuilder, BooleanBuilder, RecordBatch, UInt64Builder, UInt8Builder},
+    array::{BinaryBuilder, BooleanBuilder, RecordBatch, UInt8Builder, UInt64Builder},
     datatypes::{DataType, Field, Schema},
 };
 use std::sync::Arc;
 
+use super::{BATCH_THRESHOLD, Mint, TOKEN_PROGRAM};
 use crate::Pubkey;
-use super::{Mint, BATCH_THRESHOLD};
 
 pub struct MintDecoder {
     schema: Schema,
@@ -72,7 +72,7 @@ impl crate::decoders::Decoder for MintDecoder {
     }
 
     fn owner(&self) -> Pubkey {
-        Pubkey::TOKEN_PROGRAM
+        TOKEN_PROGRAM
     }
 
     fn schema(&self) -> &Schema {
@@ -80,7 +80,7 @@ impl crate::decoders::Decoder for MintDecoder {
     }
 
     fn matches(&self, owner: &Pubkey, data_len: u64) -> bool {
-        owner == &Pubkey::TOKEN_PROGRAM && data_len == Mint::SIZE as u64
+        owner == &TOKEN_PROGRAM && data_len == Mint::SIZE as u64
     }
 
     fn decode(&mut self, pubkey: Pubkey, data: &[u8]) -> Option<RecordBatch> {
