@@ -2,6 +2,7 @@ use arrow::{
     array::{BinaryBuilder, RecordBatch, UInt8Builder, UInt64Builder},
     datatypes::{DataType, Field, Schema},
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{BATCH_THRESHOLD, TOKEN_PROGRAM, TokenAccount};
@@ -10,6 +11,7 @@ use crate::Pubkey;
 pub struct TokenAccountDecoder {
     pub schema: Schema,
     pub rows: usize,
+    known_mints: Arc<HashSet<Pubkey>>,
     pub pubkey_b: BinaryBuilder,
     pub mint_b: BinaryBuilder,
     pub owner_b: BinaryBuilder,
@@ -19,12 +21,6 @@ pub struct TokenAccountDecoder {
     pub is_native_b: UInt64Builder,
     pub delegated_amount_b: UInt64Builder,
     pub close_authority_b: BinaryBuilder,
-}
-
-impl Default for TokenAccountDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl TokenAccountDecoder {
@@ -69,18 +65,13 @@ impl crate::decoders::Decoder for TokenAccountDecoder {
         owner == &TOKEN_PROGRAM && data_len == TokenAccount::SIZE as u64
     }
 
-    fn decode(&mut self, pubkey: Pubkey, data: &[u8]) -> Option<RecordBatch> {
+    fn decode(&mut self, pubkey: Pubkey, data: &[u8], include_spam: bool) -> Option<RecordBatch> {
         let acc = bytemuck::from_bytes::<TokenAccount>(data);
 
-        // if acc.amount == u64::MAX {
-        //     eprintln!("SUSPICIOUS ACCOUNT: {}", pubkey);
-        //     eprintln!("  Data Len: {}", data.len()); // <--- CHECK THIS
-        //
-        //     // Print offsets 60 to 80 to see the "Amount" field
-        //     let start = 60.min(data.len());
-        //     let end = 80.min(data.len());
-        //     eprintln!("  Bytes[60..80]: {:02x?}", &data[start..end]);
-        // }
+        if !include_spam && !self.known_mints.contains(&acc.mint) {
+            return None;
+        }
+
         self.pubkey_b.append_value(pubkey);
         self.mint_b.append_value(acc.mint);
         self.owner_b.append_value(acc.owner);
@@ -120,7 +111,7 @@ impl crate::decoders::Decoder for TokenAccountDecoder {
 }
 
 impl TokenAccountDecoder {
-    pub fn new() -> Self {
+    pub fn new(known_mints: Arc<HashSet<Pubkey>>) -> Self {
         Self {
             schema: Schema::new(vec![
                 Field::new("pubkey", DataType::Binary, false),
@@ -134,6 +125,7 @@ impl TokenAccountDecoder {
                 Field::new("close_authority", DataType::Binary, true),
             ]),
 
+            known_mints,
             rows: 0,
             pubkey_b: BinaryBuilder::new(),
             mint_b: BinaryBuilder::new(),

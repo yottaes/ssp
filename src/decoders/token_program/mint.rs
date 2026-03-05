@@ -2,6 +2,7 @@ use arrow::{
     array::{BinaryBuilder, BooleanBuilder, RecordBatch, UInt8Builder, UInt64Builder},
     datatypes::{DataType, Field, Schema},
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{BATCH_THRESHOLD, Mint, TOKEN_PROGRAM};
@@ -10,6 +11,7 @@ use crate::Pubkey;
 pub struct MintDecoder {
     schema: Schema,
     rows: usize,
+    known_mints: Arc<HashSet<Pubkey>>,
     pubkey_b: BinaryBuilder,
     mint_authority_b: BinaryBuilder,
     freeze_authority_b: BinaryBuilder,
@@ -18,15 +20,10 @@ pub struct MintDecoder {
     is_initialized_b: BooleanBuilder,
 }
 
-impl Default for MintDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MintDecoder {
-    pub fn new() -> Self {
+    pub fn new(known_mints: Arc<HashSet<Pubkey>>) -> Self {
         Self {
+            known_mints,
             schema: Schema::new(vec![
                 Field::new("pubkey", DataType::Binary, false),
                 Field::new("mint_authority", DataType::Binary, true),
@@ -83,7 +80,11 @@ impl crate::decoders::Decoder for MintDecoder {
         owner == &TOKEN_PROGRAM && data_len == Mint::SIZE as u64
     }
 
-    fn decode(&mut self, pubkey: Pubkey, data: &[u8]) -> Option<RecordBatch> {
+    fn decode(&mut self, pubkey: Pubkey, data: &[u8], include_spam: bool) -> Option<RecordBatch> {
+        if !include_spam && !self.known_mints.contains(&pubkey) {
+            return None;
+        }
+
         let mint = bytemuck::from_bytes::<Mint>(data);
 
         self.pubkey_b.append_value(pubkey);
