@@ -5,7 +5,6 @@ output.txt
 
 ssp
 accounts.db
-.claude/
 accounts_*.parquet
 *.parquet
 .envrc
@@ -13,4 +12,6 @@ accounts_*.parquet
 node-list-test.json
 
 .DS_Store
+
+docs/
 

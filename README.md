@@ -7,7 +7,7 @@ Stream, parse, and analyze Solana snapshots without storing them on disk.
 SSP discovers Solana RPC nodes, finds the fastest snapshot source, and streams the snapshot directly into a parsing pipeline — no 100GB+ local copy needed.
 
 ```
-RPC Discovery → HTTP Stream → zstd decompress → tar unpack → AppendVec parse → Parquet → DuckDB
+RPC Discovery → HTTP Stream → zstd decompress → custom tar → AppendVec parse → Token decode → Parquet → DuckDB
 ```
 
 ## Usage
@@ -29,72 +29,92 @@ cargo run --release -- --discover --incremental --include-dead
 
 ### CLI flags
 
-| Flag                | Description                               |
-| ------------------- | ----------------------------------------- |
-| `--path <file>`     | Parse a local `.tar.zst` snapshot         |
-| `--discover`        | Find fastest RPC node and stream snapshot |
-| `--incremental`     | Use incremental snapshot instead of full  |
-| `--owner <base58>`  | Filter by account owner                   |
-| `--pubkey <base58>` | Filter by account pubkey                  |
-| `--hash <base58>`   | Filter by account hash                    |
-| `--include-dead`    | Include dead accounts (lamports == 0)     |
-
-## Benchmarks
-
-109GB full snapshot (`snapshot-389758228.tar.zst`), M1-series Mac:
-
-| Stage                               | Time  | Throughput |
-| ----------------------------------- | ----- | ---------- |
-| Single-threaded (parse + write)     | ~887s | ~123 MB/s  |
-| Multi-threaded (2+ parquet writers) | ~146s | ~746 MB/s  |
-
-**6.1x speedup** from multithreaded parquet writers. Bottleneck is zstd decompression (single-threaded, sequential tar).
-
-Network streaming tested with incremental snapshot — 1.2M accounts parsed directly from HTTP stream, zero disk usage for the snapshot itself.
+| Flag                | Description                                                      |
+| ------------------- | ---------------------------------------------------------------- |
+| `--path <file>`     | Parse a local `.tar.zst` snapshot                                |
+| `--discover`        | Find fastest RPC node and stream snapshot                        |
+| `--incremental`     | Use incremental snapshot instead of full                         |
+| `--owner <base58>`  | Filter by account owner                                          |
+| `--pubkey <base58>` | Filter by account pubkey                                         |
+| `--hash <base58>`   | Filter by account hash                                           |
+| `--include-dead`    | Include dead accounts (lamports == 0)                            |
+| `--include-spam`    | Decode all mints/token accounts (bypass Jupiter verified filter) |
+| `--bench`           | Run pipeline benchmarks (requires --path)                        |
 
 ## Architecture
 
+3-stage multithreaded pipeline connected via bounded crossbeam channels:
+
+```
+Decompressor thread          4 Parser threads              Writers
+─────────────────           ────────────────           ──────────────
+zstd → custom tar    →     bytemuck overlay     →     2 account writers
+     raw buffers            + filter                   2 decoded writers
+                            + token decode             (parquet files)
+                                                           │
+                                                       DuckDB SQL
+```
+
 ```
 src/
-├── main.rs      # CLI args, pipeline orchestration
-├── parser.rs    # zstd → tar → AppendVec binary parsing (bytemuck)
-├── filters.rs   # Account filters (owner/pubkey/hash, dead account filtering)
-├── rpc.rs       # RPC node discovery, parallel probing, speed testing (async)
-└── db.rs        # Arrow schema, RecordBatch building, DuckDB queries
+├── main.rs                             # CLI, pipeline orchestration
+├── lib.rs                              # Module declarations
+├── parser.rs                           # Custom tar parser, AppendVec parsing, stream_raw()
+├── filters.rs                          # Account filters (owner/pubkey/hash, dead filtering)
+├── pubkey.rs                           # Pubkey type (32 bytes, bytemuck Pod, base58)
+├── db.rs                               # Arrow schema, RecordBatch, DuckDB queries
+├── rpc.rs                              # RPC node discovery, probing, speed testing (async)
+├── bench.rs                            # Pipeline stage benchmarks
+├── known_mints.rs                      # Jupiter verified token list (embedded)
+├── decoders.rs                         # Decoder trait, COptionPubkey
+└── decoders/
+    └── token_program.rs                # Mint/TokenAccount structs, COptionU64
+        ├── mint.rs                     # MintDecoder (82-byte accounts)
+        └── token_account.rs            # TokenAccountDecoder (165-byte accounts)
 ```
 
-**Key design decisions:**
+### Key design decisions
 
-- `bytemuck` for zero-copy binary parsing (like Zig's packed struct overlay)
-- `crossbeam-channel` bounded channel for backpressure between parser and writers
+- **Custom tar parser** — replaced `tar` crate for performance and buffer control (~830 MB/s peak)
+- **bytemuck** for zero-copy binary parsing (like Zig's packed struct overlay)
+- **Buffer pooling** — recycled `Vec<u8>` between decompressor and parsers
+- **crossbeam-channel** bounded channels for backpressure
+- **Decoder trait** — pluggable token decoding (Mint, TokenAccount), writes to separate parquet files
 - Async (`tokio`) only for RPC discovery (probing 300+ nodes concurrently). Rest is threads.
 - Parser accepts `impl Read` — same code handles both local files and HTTP streams
 
+## Benchmarks
+
+109GB full snapshot (`snapshot-389758228.tar.zst`), 1.05B accounts, M1-series Mac:
+
+| Configuration                      | Throughput                          |
+| ---------------------------------- | ----------------------------------- |
+| Single-threaded (parse + write)    | ~123 MB/s                           |
+| Multi-threaded pipeline + filtered | ~840 MB/s sustained, ~870 MB/s peak |
+
+Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile time). Only verified mints and their token accounts are decoded. Use `--include-spam` to bypass.
+
 ## Roadmap
 
-- [x] Streaming parser (zstd → tar → AppendVec)
-- [x] Multi-threaded parquet writers (6x speedup)
-- [x] DuckDB integration (top accounts query)
+- [x] Streaming parser (zstd → custom tar → AppendVec)
+- [x] Multi-threaded pipeline (decompressor + 4 parsers + 2+2 writers)
+- [x] Buffer pooling
+- [x] Token Program decoding (Mint + TokenAccount)
+- [x] DuckDB integration
 - [x] CLI filters (owner, pubkey, hash, dead accounts)
-- [x] RPC node discovery with parallel probing and speed testing
-- [x] Network streaming — parse directly from HTTP, zero disk usage
-- [ ] Ratatui TUI
-  - [x] Live progress bar during download/parse
-  - [ ] Query interface
-  - [ ] base58 display for pubkeys
-- [ ] Incremental snapshot merging (deltas on top of full)
-- [ ] Resume download on network failure(restart stream)
-- [ ] CSV/JSON export
-- [ ] ClickHouse backend option
+- [x] RPC node discovery + network streaming
+- [x] Spam filter (Jupiter verified token list, `--include-spam` to bypass)
+- [ ] Architecture refactor: extract core as reusable library crate
+- [ ] Ratatui TUI (on top of core crate)
+- [ ] More decoders (System, Stake, Vote, Token-2022)
+- [ ] Parallel multi-node download
+- [ ] Incremental snapshot merging
+- [ ] Resume on network failure
 
 ## Status
 
-- In Development.
-
-## Checkpoint
-
-- Data blobs parsing
+In development.
 
 ## Stack
 
-Rust 2024, bytemuck, zstd, tar, crossbeam, arrow/parquet, DuckDB, reqwest, tokio, clap
+Rust 2024, bytemuck, zstd, crossbeam, arrow/parquet, DuckDB, reqwest, tokio, clap
