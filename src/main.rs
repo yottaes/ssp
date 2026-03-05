@@ -19,6 +19,7 @@ use ssp::Pubkey;
 use ssp::bench;
 use ssp::db::{self, DuckDB};
 use ssp::filters::Filters;
+use ssp::known_mints;
 use ssp::parser::AccountHeader;
 use ssp::rpc;
 
@@ -72,6 +73,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let filters = args.filters.resolve()?;
+    let known_mints = Arc::new(known_mints::load());
+    eprintln!("loaded {} known mints", known_mints.len());
+    let pipeline_start = std::time::Instant::now();
 
     let (reader, total_size): (Box<dyn Read + Send>, Option<u64>) = if let Some(path) = &args.path {
         let size = std::fs::metadata(path)?.len();
@@ -99,7 +103,7 @@ fn main() -> anyhow::Result<()> {
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) | {msg} | ETA: {eta}",
+                "{spinner:.green} [{bar:40.cyan/blue}] {decimal_bytes}/{decimal_total_bytes} ({decimal_bytes_per_sec}) | {msg} | ETA: {eta}",
             )
             .unwrap()
             .progress_chars("=>-"),
@@ -107,7 +111,7 @@ fn main() -> anyhow::Result<()> {
     if total_size.is_none() {
         pb.set_style(
             ProgressStyle::default_spinner()
-                .template("{spinner:.green} {bytes} ({bytes_per_sec}) | {msg}")
+                .template("{spinner:.green} {decimal_bytes} ({decimal_bytes_per_sec}) | {msg}")
                 .unwrap(),
         );
     }
@@ -144,11 +148,12 @@ fn main() -> anyhow::Result<()> {
             let blocked_tx = parser_blocked_tx.clone();
             let blocked_decoded = parser_blocked_decoded.clone();
             let recycle_tx = recycle_tx.clone();
+            let known_mints = known_mints.clone();
 
             std::thread::spawn(move || -> anyhow::Result<()> {
                 let mut decoders: Vec<Box<dyn Decoder>> = vec![
-                    Box::new(MintDecoder::new()),
-                    Box::new(TokenAccountDecoder::new()),
+                    Box::new(MintDecoder::new(known_mints.clone())),
+                    Box::new(TokenAccountDecoder::new(known_mints)),
                 ];
 
                 let mut decoder_map: HashMap<Pubkey, Vec<usize>> = HashMap::new();
@@ -289,9 +294,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     let total_rows = rows_received.load(Ordering::Relaxed);
+    let elapsed = pipeline_start.elapsed();
     pb.finish_with_message(format_rows(total_rows));
     let _ = progress_handle.join();
 
+    let secs = elapsed.as_secs();
+    eprintln!(
+        "done in {}m {}s",
+        secs / 60,
+        secs % 60,
+    );
     eprintln!(
         "parsers blocked: tx={} decoded={}  |  writers starved: acct={} decoded={}",
         parser_blocked_tx.load(Ordering::Relaxed),
@@ -304,12 +316,12 @@ fn main() -> anyhow::Result<()> {
     let count = db.query_top_accounts("accounts_*.parquet")?;
     println!("total accounts: {}", count);
 
-    if std::path::Path::new("mints_0.parquet").exists() {
+    if (0..NUM_DECODED_WRITERS).any(|i| std::path::Path::new(&format!("mints_{i}.parquet")).exists()) {
         println!("\n--- Mints ---");
         db.query_decoded("mints_*.parquet", "supply")?;
     }
 
-    if std::path::Path::new("token_accounts_0.parquet").exists() {
+    if (0..NUM_DECODED_WRITERS).any(|i| std::path::Path::new(&format!("token_accounts_{i}.parquet")).exists()) {
         println!("\n--- Token Accounts ---");
         db.query_decoded("token_accounts_*.parquet", "amount")?;
     }
