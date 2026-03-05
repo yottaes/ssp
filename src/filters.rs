@@ -15,6 +15,9 @@ pub struct Filters {
 
     #[arg(long, default_value = "false")]
     pub include_dead: bool,
+
+    #[arg(long, default_value = "false")]
+    pub include_spam: bool,
 }
 
 pub struct ResolvedFilters {
@@ -22,6 +25,7 @@ pub struct ResolvedFilters {
     pub hash: Option<[u8; 32]>,
     pub pubkey: Option<Pubkey>,
     pub include_dead: bool,
+    pub include_spam: bool,
 }
 
 impl Filters {
@@ -31,6 +35,7 @@ impl Filters {
             hash: decode_b58_32(&self.hash)?,
             pubkey: Pubkey::try_from_b58(self.pubkey.as_deref())?,
             include_dead: self.include_dead,
+            include_spam: self.include_spam,
         })
     }
 }

@@ -11,7 +11,7 @@ pub trait Decoder: Send {
     fn owner(&self) -> Pubkey;
     fn schema(&self) -> &Schema;
     fn matches(&self, owner: &Pubkey, data_len: u64) -> bool;
-    fn decode(&mut self, pubkey: Pubkey, data: &[u8]) -> Option<RecordBatch>;
+    fn decode(&mut self, pubkey: Pubkey, data: &[u8], include_spam: bool) -> Option<RecordBatch>;
     fn flush(&mut self) -> Option<RecordBatch>;
 }
 
