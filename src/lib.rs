@@ -2,8 +2,8 @@ pub mod bench;
 pub mod db;
 pub mod decoders;
 pub mod filters;
-pub mod known_mints;
 pub mod parser;
+pub mod pipeline;
 pub mod pubkey;
 pub mod rpc;
 

@@ -39,11 +39,6 @@ pub fn build_record_batch(headers: &[AccountHeader]) -> anyhow::Result<RecordBat
         headers.iter().map(|h| h.rent_epoch),
     ));
 
-    //TODO: for data blobs in the future.
-    // let data_blobs: ArrayRef = Arc::new(BinaryArray::from(
-    //     headers.iter().map(|h| h.data_blob.as_slice()),
-    // ));
-
     let batch = RecordBatch::try_new(
         Arc::new(account_schema()),
         vec![
@@ -81,11 +76,6 @@ impl DuckDB {
             parquet_path, sort_col
         );
 
-        //Check for data validity
-        // let sql = format!(
-        //     "SELECT * FROM '{}' WHERE {} < 18446744073709551615 ORDER BY {} DESC LIMIT 10",
-        //     parquet_path, sort_col, sort_col
-        // );
         let mut stmt = self.connection.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let mut cols = Vec::new();

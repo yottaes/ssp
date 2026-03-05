@@ -3,7 +3,7 @@ use arrow::{array::RecordBatch, datatypes::Schema};
 use crate::Pubkey;
 use bytemuck::{Pod, Zeroable};
 
-//
+pub mod known_mints;
 pub mod token_program;
 
 pub trait Decoder: Send {
