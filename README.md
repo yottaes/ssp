@@ -104,8 +104,10 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
 - [x] CLI filters (owner, pubkey, hash, dead accounts)
 - [x] RPC node discovery + network streaming
 - [x] Spam filter (Jupiter verified token list, `--include-spam` to bypass)
-- [ ] Architecture refactor: extract core as reusable library crate
+- [x] Architecture refactor: extract core as reusable library crate
 - [ ] Ratatui TUI (on top of core crate)
+  - [ ] DuckDB queries interface
+  - [ ] Data table displaying
 - [ ] More decoders (System, Stake, Vote, Token-2022)
 - [ ] Parallel multi-node download
 - [ ] Incremental snapshot merging
@@ -113,7 +115,7 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
 
 ## Status
 
-In development.
+In slow development :)
 
 ## Stack
 

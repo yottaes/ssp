@@ -1,10 +1,7 @@
-pub mod bench;
-pub mod db;
 pub mod decoders;
 pub mod filters;
 pub mod parser;
-pub mod pipeline;
 pub mod pubkey;
-pub mod rpc;
+pub mod record_batch;
 
 pub use pubkey::Pubkey;

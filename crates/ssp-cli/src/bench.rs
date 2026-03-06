@@ -1,7 +1,7 @@
 use std::io::{self, BufReader, Read};
 use std::time::Instant;
 
-use crate::parser::{self, AccountHeader};
+use ssp_core::parser::{self, AccountHeader};
 
 /// Benchmark each pipeline stage separately to find the bottleneck.
 pub fn run(reader: impl Read + Send) {

@@ -2465,7 +2465,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ssp"
+name = "ssp-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2474,14 +2474,27 @@ dependencies = [
  "bytemuck",
  "clap",
  "crossbeam",
- "derive_more",
  "duckdb",
  "indicatif",
  "parquet",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "ssp-core",
  "tokio",
+ "zstd",
+]
+
+[[package]]
+name = "ssp-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "bs58",
+ "bytemuck",
+ "crossbeam",
+ "derive_more",
  "zstd",
 ]
 

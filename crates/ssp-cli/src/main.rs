@@ -1,10 +1,54 @@
 use clap::Parser;
 use std::io::Read;
 
-use ssp::bench;
-use ssp::filters::Filters;
-use ssp::pipeline;
-use ssp::rpc;
+use ssp_core::Pubkey;
+use ssp_core::filters::ResolvedFilters;
+
+mod bench;
+mod db;
+mod pipeline;
+mod rpc;
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct Filters {
+    #[arg(long)]
+    pub owner: Option<String>,
+
+    #[arg(long)]
+    pub hash: Option<String>,
+
+    #[arg(long)]
+    pub pubkey: Option<String>,
+
+    #[arg(long, default_value = "false")]
+    pub include_dead: bool,
+
+    #[arg(long, default_value = "false")]
+    pub include_spam: bool,
+}
+
+impl Filters {
+    pub fn resolve(&self) -> Result<ResolvedFilters, anyhow::Error> {
+        Ok(ResolvedFilters {
+            owner: Pubkey::try_from_b58(self.owner.as_deref())?,
+            hash: decode_b58_32(&self.hash)?,
+            pubkey: Pubkey::try_from_b58(self.pubkey.as_deref())?,
+            include_dead: self.include_dead,
+            include_spam: self.include_spam,
+        })
+    }
+}
+
+fn decode_b58_32(input: &Option<String>) -> Result<Option<[u8; 32]>, anyhow::Error> {
+    input
+        .as_deref()
+        .map(|s| {
+            let mut buf = [0u8; 32];
+            bs58::decode(s).onto(&mut buf)?;
+            Ok(buf)
+        })
+        .transpose()
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about)]

@@ -1,0 +1,14 @@
+[package]
+name = "ssp-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.100"
+bytemuck = { version = "1.25.0", features = ["derive"] }
+bs58 = "0.5.1"
+zstd = "0.13.3"
+crossbeam = "0.8.4"
+arrow = "56"
+derive_more = { version = "2.1.1", features = ["display"] }

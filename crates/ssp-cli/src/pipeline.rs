@@ -11,14 +11,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::Pubkey;
+use ssp_core::Pubkey;
+use ssp_core::decoders::Decoder;
+use ssp_core::decoders::known_mints;
+use ssp_core::decoders::token_program::mint::MintDecoder;
+use ssp_core::decoders::token_program::token_account::TokenAccountDecoder;
+use ssp_core::filters::ResolvedFilters;
+use ssp_core::parser::AccountHeader;
+use ssp_core::record_batch;
+
 use crate::db;
-use crate::decoders::Decoder;
-use crate::decoders::known_mints;
-use crate::decoders::token_program::mint::MintDecoder;
-use crate::decoders::token_program::token_account::TokenAccountDecoder;
-use crate::filters::ResolvedFilters;
-use crate::parser::AccountHeader;
 
 const NUM_WRITERS: usize = 2;
 const NUM_PARSERS: usize = 4;
@@ -144,7 +146,7 @@ pub fn run(
     drop(decoded_tx);
 
     // Stage 3: write parquet
-    let schema = Arc::new(db::account_schema());
+    let schema = Arc::new(record_batch::account_schema());
 
     let writers: Vec<_> = (0..NUM_WRITERS)
         .map(|i| {
@@ -170,7 +172,7 @@ pub fn run(
                 } {
                     rows.fetch_add(batch.len() as u64, Ordering::Relaxed);
                     if !batch.is_empty() {
-                        let record_batch = db::build_record_batch(&batch)?;
+                        let record_batch = record_batch::build_record_batch(&batch)?;
                         writer.write(&record_batch)?;
                     }
                 }
