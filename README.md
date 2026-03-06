@@ -14,17 +14,17 @@ RPC Discovery → HTTP Stream → zstd decompress → custom tar → AppendVec p
 
 ```bash
 # Stream from network (full snapshot, ~100GB)
-cargo run --release -- --discover
+cargo run -p ssp-cli --release -- --discover
 
 # Stream incremental snapshot (~1GB, good for testing)
-cargo run --release -- --discover --incremental
+cargo run -p ssp-cli --release -- --discover --incremental
 
 # Parse local file
-cargo run --release -- --path snapshot.tar.zst
+cargo run -p ssp-cli --release -- --path snapshot.tar.zst
 
 # With filters
-cargo run --release -- --path snapshot.tar.zst --owner <base58> --pubkey <base58>
-cargo run --release -- --discover --incremental --include-dead
+cargo run -p ssp-cli --release -- --path snapshot.tar.zst --owner <base58> --pubkey <base58>
+cargo run -p ssp-cli --release -- --discover --incremental --include-dead
 ```
 
 ### CLI flags
@@ -39,9 +39,14 @@ cargo run --release -- --discover --incremental --include-dead
 | `--hash <base58>`   | Filter by account hash                                           |
 | `--include-dead`    | Include dead accounts (lamports == 0)                            |
 | `--include-spam`    | Decode all mints/token accounts (bypass Jupiter verified filter) |
-| `--bench`           | Run pipeline benchmarks (requires --path)                        |
+| `--bench`           | Run pipeline benchmarks (requires `--path`)                      |
 
 ## Architecture
+
+Cargo workspace with two crates:
+
+- **`ssp-core`** — library: parsing, filtering, decoding, record batches
+- **`ssp-cli`** — binary (`ssp`): CLI, pipeline orchestration, RPC discovery, DuckDB
 
 3-stage multithreaded pipeline connected via bounded crossbeam channels:
 
@@ -56,36 +61,41 @@ zstd → custom tar    →     bytemuck overlay     →     2 account writers
 ```
 
 ```
-src/
-├── main.rs                             # CLI, pipeline orchestration
-├── lib.rs                              # Module declarations
-├── parser.rs                           # Custom tar parser, AppendVec parsing, stream_raw()
-├── filters.rs                          # Account filters (owner/pubkey/hash, dead filtering)
-├── pubkey.rs                           # Pubkey type (32 bytes, bytemuck Pod, base58)
-├── db.rs                               # Arrow schema, RecordBatch, DuckDB queries
-├── rpc.rs                              # RPC node discovery, probing, speed testing (async)
-├── bench.rs                            # Pipeline stage benchmarks
-├── known_mints.rs                      # Jupiter verified token list (embedded)
-├── decoders.rs                         # Decoder trait, COptionPubkey
-└── decoders/
-    └── token_program.rs                # Mint/TokenAccount structs, COptionU64
-        ├── mint.rs                     # MintDecoder (82-byte accounts)
-        └── token_account.rs            # TokenAccountDecoder (165-byte accounts)
+crates/
+├── ssp-core/src/
+│   ├── lib.rs                          # Public API
+│   ├── parser.rs                       # Custom tar parser, AppendVec parsing, stream_raw()
+│   ├── filters.rs                      # Account filters (owner/pubkey/hash, dead filtering)
+│   ├── pubkey.rs                       # Pubkey type (32 bytes, bytemuck Pod, base58)
+│   ├── record_batch.rs                 # Arrow schema, RecordBatch construction
+│   └── decoders/
+│       ├── mod.rs                      # Decoder trait, COptionPubkey
+│       ├── known_mints.rs             # Jupiter verified token list (embedded)
+│       └── token_program/
+│           ├── mod.rs                  # Mint/TokenAccount structs, COptionU64
+│           ├── mint.rs                 # MintDecoder (82-byte accounts)
+│           └── token_account.rs        # TokenAccountDecoder (165-byte accounts)
+└── ssp-cli/src/
+    ├── main.rs                         # CLI args, entry point
+    ├── pipeline.rs                     # Pipeline orchestration, threading
+    ├── db.rs                           # DuckDB queries
+    ├── rpc.rs                          # RPC node discovery, probing, speed testing (async)
+    └── bench.rs                        # Pipeline stage benchmarks
 ```
 
 ### Key design decisions
 
 - **Custom tar parser** — replaced `tar` crate for performance and buffer control (~830 MB/s peak)
 - **bytemuck** for zero-copy binary parsing (like Zig's packed struct overlay)
-- **Buffer pooling** — recycled `Vec<u8>` between decompressor and parsers
+- **Buffer pooling** — recycling `Vec<u8>` between decompressor and parsers
 - **crossbeam-channel** bounded channels for backpressure
 - **Decoder trait** — pluggable token decoding (Mint, TokenAccount), writes to separate parquet files
-- Async (`tokio`) only for RPC discovery (probing 300+ nodes concurrently). Rest is threads.
+- Async (`tokio`) only for RPC discovery (probing 300+ nodes concurrently); everything else uses threads
 - Parser accepts `impl Read` — same code handles both local files and HTTP streams
 
 ## Benchmarks
 
-109GB full snapshot (`snapshot-389758228.tar.zst`), 1.05B accounts, M1-series Mac:
+109 GB full snapshot (`snapshot-389758228.tar.zst`), 1.05B accounts, M1-series Mac:
 
 | Configuration                      | Throughput                          |
 | ---------------------------------- | ----------------------------------- |
@@ -107,7 +117,7 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
 - [x] Architecture refactor: extract core as reusable library crate
 - [ ] Ratatui TUI (on top of core crate)
   - [ ] DuckDB queries interface
-  - [ ] Data table displaying
+  - [ ] Data table display
 - [ ] More decoders (System, Stake, Vote, Token-2022)
 - [ ] Parallel multi-node download
 - [ ] Incremental snapshot merging
