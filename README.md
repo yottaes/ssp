@@ -13,21 +13,13 @@ RPC Discovery → HTTP Stream → zstd decompress → custom tar → AppendVec p
 ## Usage
 
 ```bash
-# Stream from network (full snapshot, ~100GB)
-cargo run -p ssp-cli --release -- --discover
-
-# Stream incremental snapshot (~1GB, good for testing)
-cargo run -p ssp-cli --release -- --discover --incremental
-
-# Parse local file
-cargo run -p ssp-cli --release -- --path snapshot.tar.zst
-
-# With filters
-cargo run -p ssp-cli --release -- --path snapshot.tar.zst --owner <base58> --pubkey <base58>
-cargo run -p ssp-cli --release -- --discover --incremental --include-dead
+ssp --discover                          # stream full snapshot from fastest RPC node
+ssp --discover --incremental            # stream incremental snapshot (~1GB)
+ssp --path snapshot.tar.zst             # parse local file
+ssp --path snapshot.tar.zst --owner <base58> --pubkey <base58>
 ```
 
-### CLI flags
+### Flags
 
 | Flag                | Description                                                      |
 | ------------------- | ---------------------------------------------------------------- |
