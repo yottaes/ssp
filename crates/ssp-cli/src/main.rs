@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::io::Read;
+use std::sync::Arc;
 
 use ssp_core::Pubkey;
 use ssp_core::filters::ResolvedFilters;
@@ -8,6 +9,7 @@ mod bench;
 mod db;
 mod pipeline;
 mod rpc;
+mod tui;
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct Filters {
@@ -107,5 +109,11 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("provide --path <file> or --discover");
     };
 
-    pipeline::run(reader, total_size, filters)
+    let stats = Arc::new(pipeline::PipelineStats::new());
+    let stats_clone = stats.clone();
+
+    let pipeline_handle =
+        std::thread::spawn(move || pipeline::run(reader, filters, stats_clone));
+
+    tui::run(stats, total_size, pipeline_handle)
 }
