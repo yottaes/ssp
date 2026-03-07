@@ -85,11 +85,14 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if !args.bench && args.path.is_none() && !args.discover {
+        return tui::run_interactive();
+    }
+
     let filters = args.filters.resolve()?;
 
-    let (reader, total_size): (Box<dyn Read + Send>, Option<u64>) = if let Some(path) = &args.path {
-        let size = std::fs::metadata(path)?.len();
-        (Box::new(std::fs::File::open(path)?), Some(size))
+    let reader: Box<dyn Read + Send> = if let Some(path) = &args.path {
+        Box::new(std::fs::File::open(path)?)
     } else if args.discover {
         let rt = tokio::runtime::Runtime::new()?;
         let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
@@ -104,16 +107,26 @@ fn main() -> anyhow::Result<()> {
             .build()?
             .get(&source.url)
             .send()?;
-        (Box::new(resp), source.size)
+        Box::new(resp)
     } else {
-        anyhow::bail!("provide --path <file> or --discover");
+        unreachable!()
     };
 
     let stats = Arc::new(pipeline::PipelineStats::new());
     let stats_clone = stats.clone();
 
-    let pipeline_handle =
-        std::thread::spawn(move || pipeline::run(reader, filters, stats_clone));
+    let start = std::time::Instant::now();
+    pipeline::run(reader, filters, stats_clone)?;
+    let elapsed = start.elapsed();
 
-    tui::run(stats, total_size, pipeline_handle)
+    let rows = stats.rows_parsed.load(std::sync::atomic::Ordering::Relaxed);
+    let bytes = stats.bytes_read.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "done: {} rows, {:.1} GB read in {:.1}s",
+        rows,
+        bytes as f64 / 1_073_741_824.0,
+        elapsed.as_secs_f64(),
+    );
+
+    Ok(())
 }
