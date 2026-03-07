@@ -13,11 +13,14 @@ RPC Discovery → HTTP Stream → zstd decompress → custom tar → AppendVec p
 ## Usage
 
 ```bash
-ssp --discover                          # stream full snapshot from fastest RPC node
-ssp --discover --incremental            # stream incremental snapshot (~1GB)
-ssp --path snapshot.tar.zst             # parse local file
+ssp                                     # interactive TUI (setup wizard → processing → query)
+ssp --discover                          # CLI mode: stream full snapshot from fastest RPC node
+ssp --discover --incremental            # CLI mode: stream incremental snapshot (~1GB)
+ssp --path snapshot.tar.zst             # CLI mode: parse local file
 ssp --path snapshot.tar.zst --owner <base58> --pubkey <base58>
 ```
+
+Running `ssp` without flags opens an interactive TUI with source selection, file browser, filter toggles, live processing stats, and a DuckDB query interface with presets. With `--path` or `--discover`, it runs as a headless CLI pipeline.
 
 ### Flags
 
@@ -38,7 +41,7 @@ ssp --path snapshot.tar.zst --owner <base58> --pubkey <base58>
 Cargo workspace with two crates:
 
 - **`ssp-core`** — library: parsing, filtering, decoding, record batches
-- **`ssp-cli`** — binary (`ssp`): CLI, pipeline orchestration, RPC discovery, DuckDB
+- **`ssp-cli`** — binary (`ssp`): CLI, pipeline orchestration, RPC discovery, DuckDB, ratatui TUI
 
 3-stage multithreaded pipeline connected via bounded crossbeam channels:
 
@@ -69,10 +72,16 @@ crates/
 │           └── token_account.rs        # TokenAccountDecoder (165-byte accounts)
 └── ssp-cli/src/
     ├── main.rs                         # CLI args, entry point
-    ├── pipeline.rs                     # Pipeline orchestration, threading
-    ├── db.rs                           # DuckDB queries
+    ├── pipeline.rs                     # Pipeline orchestration, threading, PipelineStats
+    ├── db.rs                           # DuckDB views, query execution
     ├── rpc.rs                          # RPC node discovery, probing, speed testing (async)
-    └── bench.rs                        # Pipeline stage benchmarks
+    ├── bench.rs                        # Pipeline stage benchmarks
+    └── tui/
+        ├── mod.rs                      # App state, main loop, phase dispatch
+        ├── setup.rs                    # Setup wizard (source, file picker, network, filters)
+        ├── processing.rs               # Discovering + processing screens
+        ├── query.rs                    # Query mode (input, presets, result table)
+        └── helpers.rs                  # Formatting, table layout, dir listing
 ```
 
 ### Key design decisions
@@ -107,9 +116,12 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
 - [x] RPC node discovery + network streaming
 - [x] Spam filter (Jupiter verified token list, `--include-spam` to bypass)
 - [x] Architecture refactor: extract core as reusable library crate
-- [ ] Ratatui TUI (on top of core crate)
-  - [ ] DuckDB queries interface
-  - [ ] Data table display
+- [x] Ratatui TUI
+  - [x] Interactive setup wizard (source selection, file browser, filters)
+  - [x] Live processing stats (progress, speed, ETA, pipeline health)
+  - [x] DuckDB query interface with presets (F1-F5) and quick commands
+  - [x] Scrollable result tables with adaptive column widths
+- [x] Headless CLI mode (`--path`/`--discover` bypass TUI)
 - [ ] More decoders (System, Stake, Vote, Token-2022)
 - [ ] Parallel multi-node download
 - [ ] Incremental snapshot merging
@@ -121,4 +133,4 @@ In slow development :)
 
 ## Stack
 
-Rust 2024, bytemuck, zstd, crossbeam, arrow/parquet, DuckDB, reqwest, tokio, clap
+Rust 2024, bytemuck, zstd, crossbeam, arrow/parquet, DuckDB, ratatui, crossterm, reqwest, tokio, clap
