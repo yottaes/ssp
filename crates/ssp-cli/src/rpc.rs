@@ -2,16 +2,21 @@ use anyhow::{Context, bail};
 use reqwest::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
+use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
 const FULL_SNAPSHOT_PATHS: &[&str] = &["/snapshot.tar.zst", "/snapshot.tar.bz2"];
 const INC_SNAPSHOT_PATHS: &[&str] = &["/incremental-snapshot.tar.zst", "/incremental-snapshot.tar.bz2"];
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const SPEED_TEST_BYTES: usize = 1024 * 1024;
-const MAX_CONCURRENT: usize = 64;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONCURRENT_PROBE: usize = 256;
+const ROUGH_TEST_BYTES: usize = 512 * 1024;
+const ROUGH_TEST_CONCURRENT: usize = 32;
+const ROUGH_TOP_N: usize = 5;
+const FINAL_TEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct RpcResponse {
@@ -131,7 +136,10 @@ async fn probe_nodes(nodes: &[RpcNode], paths: &'static [&'static str]) -> Vec<S
         .build()
         .expect("failed to build size client");
 
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let total = nodes.len();
+    let probed = Arc::new(AtomicUsize::new(0));
+    let found = Arc::new(AtomicUsize::new(0));
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_PROBE));
     let mut handles = Vec::new();
 
     for node in nodes {
@@ -139,12 +147,35 @@ async fn probe_nodes(nodes: &[RpcNode], paths: &'static [&'static str]) -> Vec<S
         let size_client = size_client.clone();
         let node = node.clone();
         let sem = sem.clone();
+        let probed = probed.clone();
+        let found = found.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            probe_node(&probe_client, &size_client, &node, paths).await
+            let result = probe_node(&probe_client, &size_client, &node, paths).await;
+            probed.fetch_add(1, Ordering::Relaxed);
+            if result.is_some() {
+                found.fetch_add(1, Ordering::Relaxed);
+            }
+            result
         }));
     }
+
+    // Progress reporter
+    let probed_r = probed.clone();
+    let found_r = found.clone();
+    let progress_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let p = probed_r.load(Ordering::Relaxed);
+            let f = found_r.load(Ordering::Relaxed);
+            eprint!("\r  probing nodes: {p}/{total} done, {f} serve snapshots   ");
+            std::io::stderr().flush().ok();
+            if p >= total {
+                break;
+            }
+        }
+    });
 
     let mut candidates = Vec::new();
     for handle in handles {
@@ -153,59 +184,86 @@ async fn probe_nodes(nodes: &[RpcNode], paths: &'static [&'static str]) -> Vec<S
         }
     }
 
+    progress_handle.abort();
+    eprint!("\r\x1b[2K");
     eprintln!(
-        "probed {} nodes, {} serve snapshots",
-        nodes.len(),
+        "  probed {} nodes, {} serve snapshots",
+        total,
         candidates.len()
     );
     candidates
 }
 
-/// Phase 2: Speed test — download 1MB from each candidate, measure throughput.
-async fn speed_test(candidates: Vec<SnapshotCandidate>) -> Vec<(SnapshotCandidate, f64)> {
+/// Download `limit` bytes from url, return (bytes, elapsed).
+async fn measure_download(client: &Client, url: &str, limit: usize) -> Option<(usize, f64)> {
+    let start = Instant::now();
+    let mut resp = client.get(url).send().await.ok()?;
+    let mut total = 0usize;
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        total += chunk.len();
+        if total >= limit {
+            break;
+        }
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    (total > 0 && elapsed > 0.0).then_some((total, elapsed))
+}
+
+/// Phase 2a: Rough concurrent filter — rank all candidates by downloading a small sample.
+async fn rough_speed_filter(
+    candidates: Vec<SnapshotCandidate>,
+) -> Vec<SnapshotCandidate> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(5))
         .build()
         .expect("failed to build speed test client");
 
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let sem = Arc::new(Semaphore::new(ROUGH_TEST_CONCURRENT));
     let mut handles = Vec::new();
 
-    for candidate in candidates {
+    for (i, candidate) in candidates.into_iter().enumerate() {
         let client = client.clone();
         let sem = sem.clone();
-
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-
-            let start = Instant::now();
-            let mut resp = match client.get(&candidate.url).send().await {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-
-            let mut total = 0usize;
-            while let Ok(Some(chunk)) = resp.chunk().await {
-                total += chunk.len();
-                if total >= SPEED_TEST_BYTES {
-                    break;
-                }
-            }
-
-            let elapsed = start.elapsed().as_secs_f64();
-            if total > 0 && elapsed > 0.0 {
-                let mbps = (total as f64 / 1_048_576.0) / elapsed;
-                Some((candidate, mbps))
-            } else {
-                None
-            }
+            let speed = measure_download(&client, &candidate.url, ROUGH_TEST_BYTES)
+                .await
+                .map(|(bytes, secs)| bytes as f64 / secs)
+                .unwrap_or(0.0);
+            (i, candidate, speed)
         }));
     }
 
     let mut results = Vec::new();
     for handle in handles {
-        if let Ok(Some(result)) = handle.await {
-            results.push(result);
+        if let Ok((i, candidate, speed)) = handle.await {
+            if speed > 0.0 {
+                results.push((i, candidate, speed));
+            }
+        }
+    }
+
+    results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+    results.truncate(ROUGH_TOP_N);
+
+    eprintln!("  narrowed to top {} candidates", results.len());
+    results.into_iter().map(|(_, c, _)| c).collect()
+}
+
+/// Phase 2b: Accurate sequential test — one at a time, large sample.
+async fn final_speed_test(
+    candidates: Vec<SnapshotCandidate>,
+) -> Vec<(SnapshotCandidate, f64)> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("failed to build final speed test client");
+
+    let mut results = Vec::new();
+    for candidate in candidates {
+        if let Some((bytes, secs)) = measure_download(&client, &candidate.url, FINAL_TEST_BYTES).await {
+            let mbps = (bytes as f64 / 1_048_576.0) / secs;
+            results.push((candidate, mbps));
         }
     }
 
@@ -234,14 +292,21 @@ pub async fn find_fastest_snapshot(
         bail!("no snapshot sources found among {} RPC nodes", nodes.len());
     }
 
-    eprintln!("speed testing {} candidates...", candidates.len());
-    let ranked = speed_test(candidates).await;
+    eprintln!("rough speed test on {} candidates...", candidates.len());
+    let shortlist = rough_speed_filter(candidates).await;
 
-    if ranked.is_empty() {
+    if shortlist.is_empty() {
         bail!("all speed tests failed");
     }
 
-    for (i, (candidate, mbps)) in ranked.iter().enumerate().take(5) {
+    eprintln!("final speed test (sequential, 16MB each)...");
+    let ranked = final_speed_test(shortlist).await;
+
+    if ranked.is_empty() {
+        bail!("all final speed tests failed");
+    }
+
+    for (i, (candidate, mbps)) in ranked.iter().enumerate() {
         eprintln!("  #{}: {:.1} MB/s — {}", i + 1, mbps, candidate.url);
     }
 
