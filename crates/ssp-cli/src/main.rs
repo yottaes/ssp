@@ -1,16 +1,18 @@
 use clap::Parser;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::Ordering;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ssp_core::Pubkey;
 use ssp_core::filters::ResolvedFilters;
 
 mod bench;
+#[allow(dead_code)]
 mod db;
 mod pipeline;
 mod rpc;
-mod tui;
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct Filters {
@@ -89,7 +91,7 @@ fn download_snapshot(incremental: bool, output_dir: &str) -> anyhow::Result<()> 
         .ok()
         .and_then(|u| {
             u.path_segments()?
-                .last()
+                .next_back()
                 .filter(|s| !s.is_empty())
                 .map(String::from)
         })
@@ -177,6 +179,106 @@ fn download_snapshot(incremental: bool, output_dir: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
+// ── Live stats printer ──────────────────────────────────────────
+
+fn format_rows(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1e3)
+    } else {
+        n.to_string()
+    }
+}
+
+fn spawn_stats_printer(
+    stats: Arc<pipeline::PipelineStats>,
+    total_bytes: Option<u64>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut last_bytes = 0u64;
+        let mut last_time = start;
+        let mut printed = false;
+
+        loop {
+            let bytes = stats.bytes_read.load(Ordering::Relaxed);
+            let rows = stats.rows_parsed.load(Ordering::Relaxed);
+            let elapsed = start.elapsed().as_secs_f64();
+
+            let now = Instant::now();
+            let dt = now.duration_since(last_time).as_secs_f64();
+            let speed = if dt > 0.1 {
+                (bytes.saturating_sub(last_bytes)) as f64 / dt / 1_048_576.0
+            } else {
+                0.0
+            };
+            last_bytes = bytes;
+            last_time = now;
+
+            let mins = elapsed as u64 / 60;
+            let secs = elapsed as u64 % 60;
+
+            let blk_tx = stats.parser_blocked_tx.load(Ordering::Relaxed);
+            let blk_dec = stats.parser_blocked_decoded.load(Ordering::Relaxed);
+            let strv_a = stats.writer_starved_acct.load(Ordering::Relaxed);
+            let strv_d = stats.writer_starved_decoded.load(Ordering::Relaxed);
+
+            // move cursor up to overwrite previous 3 lines
+            if printed {
+                eprint!("\x1b[2A\r");
+            }
+
+            // line 1: progress
+            if let Some(total) = total_bytes {
+                let pct = (bytes as f64 / total as f64 * 100.0).min(100.0);
+                let bar_w = 30;
+                let filled = (pct / 100.0 * bar_w as f64) as usize;
+                let bar = "█".repeat(filled) + &"░".repeat(bar_w - filled);
+
+                let eta = if pct > 1.0 && pct < 99.0 {
+                    let rem = elapsed / pct * (100.0 - pct);
+                    format!("eta {}m{:02}s", rem as u64 / 60, rem as u64 % 60)
+                } else {
+                    String::new()
+                };
+
+                eprintln!(
+                    "\x1b[2K  {bar} {pct:.0}%  {:.2} / {:.2} GB  {eta}",
+                    bytes as f64 / 1e9,
+                    total as f64 / 1e9,
+                );
+            } else {
+                eprintln!("\x1b[2K  {:.2} GB read", bytes as f64 / 1e9);
+            }
+
+            // line 2: speed, rows, time
+            eprintln!(
+                "\x1b[2K  {speed:.0} MB/s | {} rows | {mins}m{secs:02}s",
+                format_rows(rows),
+            );
+
+            // line 3: pipeline health
+            eprint!(
+                "\x1b[2K  blocked: tx={blk_tx} dec={blk_dec}  starved: acct={strv_a} dec={strv_d}"
+            );
+            io::stderr().flush().ok();
+            printed = true;
+
+            if stats.finished.load(Ordering::Acquire) {
+                eprintln!();
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    })
+}
+
+// ── Main ────────────────────────────────────────────────────────
+
 fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
 
@@ -195,14 +297,21 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if !args.bench && args.path.is_none() && !args.discover {
-        return tui::run_interactive();
+    if args.path.is_none() && !args.discover {
+        eprintln!("usage: ssp --path <file> [filters]");
+        eprintln!("       ssp --discover [--incremental] [filters]");
+        eprintln!("       ssp --download-full | --download-incremental");
+        eprintln!("       ssp --bench --path <file>");
+        std::process::exit(1);
     }
 
     let filters = args.filters.resolve()?;
 
-    let reader: Box<dyn Read + Send> = if let Some(path) = &args.path {
-        Box::new(std::fs::File::open(path)?)
+    let (reader, total_bytes): (Box<dyn Read + Send>, Option<u64>) = if let Some(path) = &args.path
+    {
+        let file = std::fs::File::open(path)?;
+        let size = file.metadata().ok().map(|m| m.len());
+        (Box::new(file), size)
     } else if args.discover {
         let rt = tokio::runtime::Runtime::new()?;
         let source = rt.block_on(rpc::find_fastest_snapshot(None, args.incremental))?;
@@ -217,25 +326,29 @@ fn main() -> anyhow::Result<()> {
             .build()?
             .get(&source.url)
             .send()?;
-        Box::new(resp)
+        (Box::new(resp), source.size)
     } else {
         unreachable!()
     };
 
     let stats = Arc::new(pipeline::PipelineStats::new());
-    let stats_clone = stats.clone();
+    let printer = spawn_stats_printer(stats.clone(), total_bytes);
 
-    let start = std::time::Instant::now();
-    pipeline::run(reader, filters, stats_clone)?;
+    let start = Instant::now();
+    pipeline::run(reader, filters, stats.clone())?;
     let elapsed = start.elapsed();
 
-    let rows = stats.rows_parsed.load(std::sync::atomic::Ordering::Relaxed);
-    let bytes = stats.bytes_read.load(std::sync::atomic::Ordering::Relaxed);
+    printer.join().ok();
+
+    let rows = stats.rows_parsed.load(Ordering::Relaxed);
+    let bytes = stats.bytes_read.load(Ordering::Relaxed);
+    let avg_speed = bytes as f64 / elapsed.as_secs_f64() / 1_048_576.0;
     eprintln!(
-        "done: {} rows, {:.1} GB read in {:.1}s",
-        rows,
+        "\ndone: {} rows, {:.1} GB in {:.1}s ({:.0} MB/s)",
+        format_rows(rows),
         bytes as f64 / 1_073_741_824.0,
         elapsed.as_secs_f64(),
+        avg_speed,
     );
 
     Ok(())
