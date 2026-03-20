@@ -1,6 +1,7 @@
 use clap::Parser;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::sync::Arc;
+use std::time::Instant;
 
 use ssp_core::Pubkey;
 use ssp_core::filters::ResolvedFilters;
@@ -67,12 +68,121 @@ pub struct CliArgs {
     #[arg(long)]
     incremental: bool,
 
+    #[arg(long, conflicts_with = "download_incremental")]
+    download_full: bool,
+
+    #[arg(long, conflicts_with = "download_full")]
+    download_incremental: bool,
+
+    #[arg(long, default_value = ".")]
+    output: String,
+
     #[command(flatten)]
     filters: Filters,
 }
 
+fn download_snapshot(incremental: bool, output_dir: &str) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let source = rt.block_on(rpc::find_fastest_snapshot(None, incremental))?;
+
+    let filename = reqwest::Url::parse(&source.url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()?
+                .last()
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| {
+            if incremental {
+                "incremental-snapshot.tar.zst"
+            } else {
+                "snapshot.tar.zst"
+            }
+            .into()
+        });
+
+    let dir = std::path::Path::new(output_dir);
+    std::fs::create_dir_all(dir)?;
+    let dest = dir.join(&filename);
+
+    eprintln!(
+        "downloading to {} ({:.1} MB/s, {:.1} GB)",
+        dest.display(),
+        source.speed_mbps,
+        source.size.unwrap_or(0) as f64 / 1_073_741_824.0
+    );
+
+    let mut resp = reqwest::blocking::Client::builder()
+        .timeout(None)
+        .build()?
+        .get(&source.url)
+        .send()?;
+
+    let total = resp
+        .content_length()
+        .or(source.size)
+        .filter(|&s| s > 0);
+
+    let mut file = std::fs::File::create(&dest)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut downloaded: u64 = 0;
+    let start = Instant::now();
+    let mut last_print = Instant::now();
+
+    loop {
+        let n = resp.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+        downloaded += n as u64;
+
+        if last_print.elapsed().as_millis() >= 500 {
+            let elapsed = start.elapsed().as_secs_f64();
+            let speed = if elapsed > 0.5 {
+                downloaded as f64 / elapsed / 1_048_576.0
+            } else {
+                0.0
+            };
+            if let Some(t) = total {
+                let pct = downloaded as f64 / t as f64 * 100.0;
+                eprint!(
+                    "\r  {:.2} / {:.2} GB  ({:.0}%)  {:.1} MB/s    ",
+                    downloaded as f64 / 1e9,
+                    t as f64 / 1e9,
+                    pct,
+                    speed
+                );
+            } else {
+                eprint!(
+                    "\r  {:.2} GB  {:.1} MB/s    ",
+                    downloaded as f64 / 1e9,
+                    speed
+                );
+            }
+            io::stderr().flush().ok();
+            last_print = Instant::now();
+        }
+    }
+
+    let elapsed = start.elapsed();
+    eprintln!(
+        "\ndone: {:.2} GB in {:.0}s → {}",
+        downloaded as f64 / 1e9,
+        elapsed.as_secs_f64(),
+        dest.display()
+    );
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
+
+    if args.download_full || args.download_incremental {
+        return download_snapshot(args.download_incremental, &args.output);
+    }
 
     if args.bench {
         let path = args.path.as_deref().expect("--bench requires --path");
