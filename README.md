@@ -16,6 +16,8 @@ RPC Discovery → HTTP Stream → zstd decompress → custom tar → AppendVec p
 ssp                                     # interactive TUI (setup wizard → processing → query)
 ssp --discover                          # CLI mode: stream full snapshot from fastest RPC node
 ssp --discover --incremental            # CLI mode: stream incremental snapshot (~1GB)
+ssp --download-full                     # download full snapshot to disk (no parsing)
+ssp --download-incremental --output ~/snapshots  # download incremental to specific dir
 ssp --path snapshot.tar.zst             # CLI mode: parse local file
 ssp --path snapshot.tar.zst --owner <base58> --pubkey <base58>
 ```
@@ -29,6 +31,9 @@ Running `ssp` without flags opens an interactive TUI with source selection, file
 | `--path <file>`     | Parse a local `.tar.zst` snapshot                                |
 | `--discover`        | Find fastest RPC node and stream snapshot                        |
 | `--incremental`     | Use incremental snapshot instead of full                         |
+| `--download-full`   | Download full snapshot to disk without parsing                   |
+| `--download-incremental` | Download incremental snapshot to disk without parsing        |
+| `--output <dir>`    | Output directory for downloads (default: `.`)                    |
 | `--owner <base58>`  | Filter by account owner                                          |
 | `--pubkey <base58>` | Filter by account pubkey                                         |
 | `--hash <base58>`   | Filter by account hash                                           |
@@ -122,6 +127,7 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
   - [x] DuckDB query interface with presets (F1-F5) and quick commands
   - [x] Scrollable result tables with adaptive column widths
 - [x] Headless CLI mode (`--path`/`--discover` bypass TUI)
+- [x] Download-only mode (`--download-full`/`--download-incremental`)
 - [ ] More decoders (System, Stake, Vote, Token-2022)
 - [ ] Parallel multi-node download
 - [ ] Incremental snapshot merging
