@@ -236,10 +236,10 @@ async fn rough_speed_filter(
 
     let mut results = Vec::new();
     for handle in handles {
-        if let Ok((i, candidate, speed)) = handle.await {
-            if speed > 0.0 {
-                results.push((i, candidate, speed));
-            }
+        if let Ok((i, candidate, speed)) = handle.await
+            && speed > 0.0
+        {
+            results.push((i, candidate, speed));
         }
     }
 

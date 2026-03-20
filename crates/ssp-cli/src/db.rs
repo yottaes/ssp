@@ -49,14 +49,9 @@ impl DuckDB {
         while let Some(row) = rows.next()? {
             let mut cols = Vec::new();
             let mut i = 0;
-            loop {
-                match row.get::<_, duckdb::types::Value>(i) {
-                    Ok(val) => {
-                        cols.push(val);
-                        i += 1;
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(val) = row.get::<_, duckdb::types::Value>(i) {
+                cols.push(val);
+                i += 1;
             }
             data.push(cols);
         }
