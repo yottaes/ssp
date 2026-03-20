@@ -1,6 +1,18 @@
 use std::path::Path;
 
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
+
 use super::FileEntry;
+
+pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let [vertical] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [rect] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(vertical);
+    rect
+}
 
 pub fn read_dir_entries(dir: &Path) -> Vec<FileEntry> {
     let mut entries = Vec::new();

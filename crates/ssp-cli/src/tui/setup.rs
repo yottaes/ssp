@@ -2,10 +2,10 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use super::helpers::{format_size, read_dir_entries};
+use super::helpers::{centered_rect, format_size, read_dir_entries};
 use super::{App, SetupScreen};
 
 impl App {
@@ -17,18 +17,20 @@ impl App {
     // ── Source selection ─────────────────────────────────────────
 
     pub(super) fn render_source(&self, frame: &mut Frame) {
-        let area = frame.area();
+        let popup = centered_rect(50, 10, frame.area());
+        frame.render_widget(Clear, popup);
+
         let outer = Block::default()
             .title(" SSP — Solana Snapshot Parser ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
-        let inner = outer.inner(area);
-        frame.render_widget(outer, area);
+        let inner = outer.inner(popup);
+        frame.render_widget(outer, popup);
 
         let chunks = Layout::vertical([
-            Constraint::Min(3),
-            Constraint::Length(5),
-            Constraint::Min(3),
+            Constraint::Length(2),
+            Constraint::Length(4),
+            Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(inner);
