@@ -143,7 +143,7 @@ fn download_snapshot(incremental: bool, output_dir: &str) -> anyhow::Result<()> 
         if last_print.elapsed().as_millis() >= 500 {
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.5 {
-                downloaded as f64 / elapsed / 1_048_576.0
+                downloaded as f64 / elapsed / 1_000_000.0
             } else {
                 0.0
             };
@@ -181,6 +181,8 @@ fn download_snapshot(incremental: bool, output_dir: &str) -> anyhow::Result<()> 
 
 // ── Live stats printer ──────────────────────────────────────────
 
+const GB: f64 = 1_000_000_000.0;
+
 fn format_rows(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}B", n as f64 / 1e9)
@@ -198,82 +200,60 @@ fn spawn_stats_printer(
     total_bytes: Option<u64>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
+        use std::fmt::Write as _;
         let start = Instant::now();
-        let mut last_bytes = 0u64;
-        let mut last_time = start;
-        let mut printed = false;
+        let mut buf = String::new();
 
         loop {
             let bytes = stats.bytes_read.load(Ordering::Relaxed);
             let rows = stats.rows_parsed.load(Ordering::Relaxed);
             let elapsed = start.elapsed().as_secs_f64();
 
-            let now = Instant::now();
-            let dt = now.duration_since(last_time).as_secs_f64();
-            let speed = if dt > 0.1 {
-                (bytes.saturating_sub(last_bytes)) as f64 / dt / 1_048_576.0
+            let avg_speed = if elapsed > 0.5 {
+                bytes as f64 / elapsed / 1_000_000.0
             } else {
                 0.0
             };
-            last_bytes = bytes;
-            last_time = now;
 
             let mins = elapsed as u64 / 60;
             let secs = elapsed as u64 % 60;
 
-            let blk_tx = stats.parser_blocked_tx.load(Ordering::Relaxed);
-            let blk_dec = stats.parser_blocked_decoded.load(Ordering::Relaxed);
-            let strv_a = stats.writer_starved_acct.load(Ordering::Relaxed);
-            let strv_d = stats.writer_starved_decoded.load(Ordering::Relaxed);
+            buf.clear();
+            let _ = write!(buf, "\r\x1b[2K  ");
 
-            // move cursor up to overwrite previous 3 lines
-            if printed {
-                eprint!("\x1b[2A\r");
-            }
-
-            // line 1: progress
             if let Some(total) = total_bytes {
                 let pct = (bytes as f64 / total as f64 * 100.0).min(100.0);
-                let bar_w = 30;
+                let bar_w = 20;
                 let filled = (pct / 100.0 * bar_w as f64) as usize;
-                let bar = "█".repeat(filled) + &"░".repeat(bar_w - filled);
+                let bar: String = "█".repeat(filled) + &"░".repeat(bar_w - filled);
 
-                let eta = if pct > 1.0 && pct < 99.0 {
-                    let rem = elapsed / pct * (100.0 - pct);
-                    format!("eta {}m{:02}s", rem as u64 / 60, rem as u64 % 60)
-                } else {
-                    String::new()
-                };
-
-                eprintln!(
-                    "\x1b[2K  {bar} {pct:.0}%  {:.2} / {:.2} GB  {eta}",
-                    bytes as f64 / 1e9,
-                    total as f64 / 1e9,
+                let _ = write!(
+                    buf,
+                    "{bar} {pct:.0}%  {:.1}/{:.1} GB",
+                    bytes as f64 / GB,
+                    total as f64 / GB,
                 );
             } else {
-                eprintln!("\x1b[2K  {:.2} GB read", bytes as f64 / 1e9);
+                let _ = write!(buf, "{:.1} GB", bytes as f64 / GB);
             }
 
-            // line 2: speed, rows, time
-            eprintln!(
-                "\x1b[2K  {speed:.0} MB/s | {} rows | {mins}m{secs:02}s",
+            let _ = write!(
+                buf,
+                "  {avg_speed:.0} MB/s  {} rows  {mins}m{secs:02}s",
                 format_rows(rows),
             );
 
-            // line 3: pipeline health
-            eprint!(
-                "\x1b[2K  blocked: tx={blk_tx} dec={blk_dec}  starved: acct={strv_a} dec={strv_d}"
-            );
+            io::stderr().write_all(buf.as_bytes()).ok();
             io::stderr().flush().ok();
-            printed = true;
 
             if stats.finished.load(Ordering::Acquire) {
-                eprintln!();
                 break;
             }
 
             std::thread::sleep(Duration::from_millis(250));
         }
+
+        eprintln!();
     })
 }
 
@@ -342,11 +322,11 @@ fn main() -> anyhow::Result<()> {
 
     let rows = stats.rows_parsed.load(Ordering::Relaxed);
     let bytes = stats.bytes_read.load(Ordering::Relaxed);
-    let avg_speed = bytes as f64 / elapsed.as_secs_f64() / 1_048_576.0;
+    let avg_speed = bytes as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     eprintln!(
         "\ndone: {} rows, {:.1} GB in {:.1}s ({:.0} MB/s)",
         format_rows(rows),
-        bytes as f64 / 1_073_741_824.0,
+        bytes as f64 / GB,
         elapsed.as_secs_f64(),
         avg_speed,
     );

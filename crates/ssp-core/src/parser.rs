@@ -85,7 +85,6 @@ impl AccountHeader {
 
         let mut header = [0u8; TAR_BLOCK];
         let mut skip_buf = [0u8; 65536];
-        let mut blocked: u64 = 0;
 
         loop {
             match decoder.read_exact(&mut header) {
@@ -117,9 +116,6 @@ impl AccountHeader {
                     decoder.read_exact(&mut skip_buf[..padding])?;
                 }
 
-                if raw_tx.is_full() {
-                    blocked += 1;
-                }
                 raw_tx.send(buf)?;
             } else {
                 // Skip entry data efficiently
@@ -132,7 +128,6 @@ impl AccountHeader {
             }
         }
 
-        eprintln!("decompressor blocked {blocked} times (raw channel full)");
         Ok(())
     }
 
