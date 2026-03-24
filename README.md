@@ -1,6 +1,6 @@
 # SSP — Solana Snapshot Parser
 
-Stream, parse, and analyze Solana snapshots without storing them on disk.
+Run full Solana blockchain analytics on your laptop — no validator node, no third-party APIs, no cloud costs. SSP streams 100 GB+ snapshots directly from Solana mainnet RPC nodes, parses them in real-time at ~850 MB/s, and outputs to Parquet + DuckDB for instant SQL queries.
 
 ## What it does
 
@@ -25,20 +25,20 @@ During processing, a live progress line updates in the terminal showing progress
 
 ### Flags
 
-| Flag                | Description                                                      |
-| ------------------- | ---------------------------------------------------------------- |
-| `--path <file>`     | Parse a local `.tar.zst` snapshot                                |
-| `--discover`        | Find fastest RPC node and stream snapshot                        |
-| `--incremental`     | Use incremental snapshot instead of full                         |
-| `--download-full`   | Download full snapshot to disk without parsing                   |
-| `--download-incremental` | Download incremental snapshot to disk without parsing        |
-| `--output <dir>`    | Output directory for downloads (default: `.`)                    |
-| `--owner <base58>`  | Filter by account owner                                          |
-| `--pubkey <base58>` | Filter by account pubkey                                         |
-| `--hash <base58>`   | Filter by account hash                                           |
-| `--include-dead`    | Include dead accounts (lamports == 0)                            |
-| `--include-spam`    | Decode all mints/token accounts (bypass Jupiter verified filter) |
-| `--bench`           | Run pipeline benchmarks (requires `--path`)                      |
+| Flag                     | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `--path <file>`          | Parse a local `.tar.zst` snapshot                                |
+| `--discover`             | Find fastest RPC node and stream snapshot                        |
+| `--incremental`          | Use incremental snapshot instead of full                         |
+| `--download-full`        | Download full snapshot to disk without parsing                   |
+| `--download-incremental` | Download incremental snapshot to disk without parsing            |
+| `--output <dir>`         | Output directory for downloads (default: `.`)                    |
+| `--owner <base58>`       | Filter by account owner                                          |
+| `--pubkey <base58>`      | Filter by account pubkey                                         |
+| `--hash <base58>`        | Filter by account hash                                           |
+| `--include-dead`         | Include dead accounts (lamports == 0)                            |
+| `--include-spam`         | Decode all mints/token accounts (bypass Jupiter verified filter) |
+| `--bench`                | Run pipeline benchmarks (requires `--path`)                      |
 
 ## Architecture
 
