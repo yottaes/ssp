@@ -116,7 +116,14 @@ Spam filter uses Jupiter's verified token list (4550 mints, embedded at compile 
 - [x] Architecture refactor: extract core as reusable library crate
 - [x] CLI with live progress bar and pipeline health stats
 - [x] Download-only mode (`--download-full`/`--download-incremental`)
+- [ ] UX improvements
+  - [ ] Configuration file
+  - [ ] DuckDB SQL query interface
 - [ ] More decoders (System, Stake, Vote, Token-2022)
+- [ ] Custom decoders
+  - [ ] Upload a custom ABI
+  - [ ] Parse via a dynamic ABI
+- [ ] Parallel downloads
 - [ ] Incremental snapshot merging
 - [ ] Resume on network failure
 
